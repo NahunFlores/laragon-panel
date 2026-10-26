@@ -556,6 +556,8 @@ async function loadLogs() {
   try {
     const r = await api(`/api/logs?service=${encodeURIComponent(logService)}`);
     lastLogText = r.text || '';
+    const meta = $('#logPath');
+    if (meta) meta.innerHTML = r.file ? `<span class="mono">${esc(r.file)}</span>` : '<span>sin archivo de log para este servicio</span>';
     renderLogText();
   } catch (e) {
     lastLogText = '';

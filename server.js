@@ -710,12 +710,21 @@ function listBackups() {
 async function importDump(file) {
   const allowed = [path.resolve(LARAGON, 'backups')];
   if (LEGACY_DUMPS) allowed.push(path.resolve(LEGACY_DUMPS));
-  const full = path.resolve(file);
-  if (!allowed.some(r => full.startsWith(r))) return { ok: false, error: 'Archivo no permitido' };
+  const full = path.resolve(String(file || ''));
+  if (!allowed.some(r => full === r || full.startsWith(r + path.sep))) return { ok: false, error: 'Archivo no permitido' };
   if (!fs.existsSync(full)) return { ok: false, error: 'Archivo no encontrado' };
-  const cmd = `"${mysql.client}" -u root --port=${MYSQL_PORT} --protocol=TCP --default-character-set=utf8mb4 < "${full}"`;
-  const r = await run('cmd.exe', ['/c', cmd], { timeout: 600000, maxBuffer: 10 * 1024 * 1024 });
-  return r.code === 0 ? { ok: true } : { ok: false, error: (r.stderr || r.stdout || 'Error al importar').slice(0, 2000) };
+  if (!mysql) return { ok: false, error: 'MySQL no encontrado' };
+  // Se envia el dump por stdin: evita cmd.exe, comillas y redirecciones fragiles.
+  return await new Promise(resolve => {
+    const child = spawn(mysql.client, ['-u', 'root', `--port=${MYSQL_PORT}`, '--protocol=TCP', '--default-character-set=utf8mb4'], { windowsHide: true });
+    let err = '';
+    const stream = fs.createReadStream(full);
+    stream.on('error', e => { err += e.message; try { child.kill(); } catch {} });
+    stream.pipe(child.stdin);
+    child.stderr.on('data', d => { err += d.toString(); });
+    child.on('error', e => resolve({ ok: false, error: e.message }));
+    child.on('close', code => resolve(code === 0 ? { ok: true } : { ok: false, error: (err || `exit ${code}`).slice(0, 2000) }));
+  });
 }
 
 async function dbAction(action, name) {
@@ -981,6 +990,44 @@ function readLogFiltered(file, sinceMs, untilMs, maxLines) {
     entries: kept.length,
     cut: picked.length < kept.length,
   };
+}
+
+function apacheErrorLog() {
+  if (!apache) return null;
+  let text = '';
+  try { text = fs.readFileSync(apache.conf, 'utf8'); } catch {}
+  const m = text.match(/^\s*ErrorLog\s+"?([^"\r\n]+)"?/im);
+  if (m) {
+    const raw = m[1].trim().replace(/\\/g, '/');
+    if (!/^(pipe|syslog)/i.test(raw)) {
+      const full = path.isAbsolute(raw) ? raw : path.join(apache.base, raw);
+      if (fs.existsSync(full)) return full;
+    }
+  }
+  for (const cand of ['logs/error_log', 'logs/error.log']) {
+    const full = path.join(apache.base, cand);
+    if (fs.existsSync(full)) return full;
+  }
+  return null;
+}
+
+function mysqlErrorLog() {
+  if (!mysql) return null;
+  let dataDir = '';
+  try {
+    const ini = fs.readFileSync(mysql.ini, 'utf8');
+    const m = ini.match(/^\s*datadir\s*=\s*"?([^"\r\n]+)"?/im);
+    if (m) {
+      const raw = m[1].trim().replace(/\\/g, '/');
+      dataDir = path.isAbsolute(raw) ? raw : path.join(mysql.base, raw);
+    }
+  } catch {}
+  const dirs = [dataDir, path.join(LARAGON, 'data', 'mysql-8'), path.join(LARAGON, 'data', 'mysql-8.4')].filter(Boolean);
+  for (const dir of dirs) {
+    const f = latestFile(dir, x => x.endsWith('.err'));
+    if (f) return path.join(dir, f);
+  }
+  return null;
 }
 
 let statusCache = { at: 0, data: {} };
@@ -1375,17 +1422,21 @@ async function handle(req, res, isLan) {
     if (url.pathname === '/api/logs') {
       const service = url.searchParams.get('service') || 'apache';
       let text = '';
-      if (service === 'apache' && apache) text = tailFile(path.join(apache.logs, 'error.log'), 120);
+      let file = null;
+      if (service === 'apache') {
+        file = apacheErrorLog();
+        if (file) text = tailFile(file, 200);
+      }
       if (service === 'mysql') {
-        const dir = path.join(LARAGON, 'data', 'mysql-8');
-        const f = latestFile(dir, f => f.endsWith('.err'));
-        if (f) text = tailFile(path.join(dir, f), 120);
+        file = mysqlErrorLog();
+        if (file) text = tailFile(file, 200);
       }
       if (service.startsWith('node:')) {
         const name = service.slice(5).replace(/[^A-Za-z0-9._-]/g, '_');
-        text = tailFile(path.join(LARAGON, 'logs', `node-${name}.log`), 200);
+        file = path.join(LARAGON, 'logs', `node-${name}.log`);
+        text = tailFile(file, 200);
       }
-      return json(res, 200, { service, text });
+      return json(res, 200, { service, text, file: file ? file.replace(/\\/g, '/') : null });
     }
     if (url.pathname === '/api/service' && req.method === 'POST') {
       const body = await readBody(req);
@@ -1434,16 +1485,20 @@ async function handle(req, res, isLan) {
     if (url.pathname === '/api/open-path' && req.method === 'POST') {
       const body = await readBody(req);
       const p = path.resolve(String(body.path || ''));
-      const roots = [LARAGON];
+      const roots = [LARAGON, WWW];
       if (config.legacyDumps) roots.push(config.legacyDumps);
+      for (const prj of readProjects()) if (prj.root) roots.push(prj.root);
       const allowed = roots.some(root => {
         const r = path.resolve(root).toLowerCase();
         const f = p.toLowerCase();
         return f === r || f.startsWith(r + path.sep);
       });
       if (!allowed) return json(res, 400, { ok: false, error: 'Ruta no permitida' });
-      spawn('cmd.exe', ['/c', 'start', '', p], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-      return json(res, 200, { ok: true });
+      let isDir = false;
+      try { isDir = fs.statSync(p).isDirectory(); } catch {}
+      if (isDir) spawn('explorer.exe', [p], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      else spawn('cmd.exe', ['/c', 'start', '', p], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      return json(res, 200, { ok: true, dir: isDir });
     }
     if (url.pathname === '/api/system') return json(res, 200, await systemStats());
     if (url.pathname === '/api/network') {
