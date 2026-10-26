@@ -13,6 +13,7 @@ lan-key.txt
 
 # Generado en tiempo de ejecución
 backups/
+previews/
 apply-backup-tasks.ps1
 firewall.ps1
 backup-task-*.cmd

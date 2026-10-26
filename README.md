@@ -9,6 +9,7 @@ Panel de control privado para **Laragon** en Windows. Sustituye la interfaz de L
 - **Dashboard** con CPU, RAM, disco, GPU, uptime y consumo por servicio.
 - **Servicios**: iniciar, detener y reiniciar Apache y MySQL por separado.
 - **Proyectos**: puerto, estado HTTP, abrir sitio, carpeta, VS Code, terminal y logs.
+- **Vista previa**: cada proyecto activo (punto verde) muestra una miniatura real de su portada, capturada con Edge/Chrome headless y cacheada 15 minutos. Los sitios apagados no se capturan.
 - **Nuevo sitio**: PHP, HTML, Laravel, Node.js o enlazar una carpeta existente.
 - **PHP**: detecta versiones instaladas, cambia la activa y activa/desactiva extensiones.
 - **Bases de datos**: listar, crear, borrar, dump, importar y backup total.
@@ -200,6 +201,8 @@ node server.js
 cd electron-app
 npm start
 ```
+
+Las miniaturas de la vista previa se capturan con Edge o Chrome en modo headless (se autodetectan; se puede fijar `PREVIEW_BROWSER` con la ruta al `.exe`). Se guardan en `previews/` (no versionado) y solo se generan para proyectos que responden.
 
 No hay paso de compilación: el panel es HTML/CSS/JS y el servidor usa solo módulos de Node.
 

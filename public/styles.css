@@ -238,6 +238,28 @@ code { background: rgba(148, 163, 184, .12); padding: 1px 6px; border-radius: 6p
   border: 1px solid var(--line); padding: 3px 7px; border-radius: 999px;
 }
 .project-card .btn { padding: 7px 11px; font-size: 12px; }
+.project-preview {
+  position: relative; border-radius: 11px; overflow: hidden;
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(135deg, rgba(34, 211, 238, .08), rgba(129, 140, 248, .08)),
+    repeating-linear-gradient(45deg, rgba(148, 163, 184, .05) 0 8px, transparent 8px 16px);
+  aspect-ratio: 16 / 10;
+  display: grid; place-items: center;
+  cursor: pointer;
+  transition: border-color .18s, transform .14s;
+}
+.project-preview:hover { border-color: rgba(34, 211, 238, .45); }
+.project-preview img {
+  width: 100%; height: 100%; object-fit: cover; object-position: top center;
+  display: block; transition: transform .3s;
+}
+.project-preview:hover img { transform: scale(1.03); }
+.project-preview .pv-hint {
+  font-size: 11.5px; color: var(--muted); letter-spacing: .2px;
+}
+.project-preview.has-shot { background: #070b14; }
+.project-preview.no-shot { cursor: default; opacity: .8; }
 
 /* ---------- Table ---------- */
 .table-wrap { overflow: auto; padding: 4px 6px; }

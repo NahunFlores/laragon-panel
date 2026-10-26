@@ -749,12 +749,109 @@ async function backupAll() {
 
 function httpStatus(port) {
   return new Promise(resolve => {
-    const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: 1200 }, res => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: 3500 }, res => {
       res.resume();
       resolve(res.statusCode || 0);
     });
     req.on('timeout', () => { req.destroy(); resolve(0); });
     req.on('error', () => resolve(0));
+  });
+}
+
+const PREVIEW_DIR = path.join(__dirname, 'previews');
+const PREVIEW_TTL = 15 * 60 * 1000;
+const PREVIEW_MAX = 3;
+const PREVIEW_WIDTH = 1000;
+const PREVIEW_HEIGHT = 700;
+let previewBrowser;
+const previewQueue = [];
+const previewPending = new Set();
+let previewRunning = 0;
+
+function findBrowser() {
+  if (previewBrowser !== undefined) return previewBrowser;
+  const candidates = [
+    process.env.PREVIEW_BROWSER,
+    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+    'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+    'C:/Program Files/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+  ].filter(Boolean);
+  previewBrowser = candidates.find(p => { try { return fs.existsSync(p); } catch { return false; } }) || '';
+  return previewBrowser;
+}
+
+function capturePreview(port) {
+  return new Promise(resolve => {
+    const browser = findBrowser();
+    if (!browser) return resolve({ ok: false, error: 'No hay Edge ni Chrome para capturar la vista previa' });
+    fs.mkdirSync(PREVIEW_DIR, { recursive: true });
+    const target = path.join(PREVIEW_DIR, `${port}.png`);
+    const stamp = `${port}-${Date.now()}`;
+    const tmpFile = path.join(PREVIEW_DIR, `.tmp-${stamp}.png`);
+    const profile = path.join(os.tmpdir(), `laragon-preview-profile-${stamp}`);
+    const child = spawn(browser, [
+      '--headless=new',
+      '--disable-gpu',
+      '--hide-scrollbars',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--mute-audio',
+      `--user-data-dir=${profile}`,
+      `--window-size=${PREVIEW_WIDTH},${PREVIEW_HEIGHT}`,
+      '--virtual-time-budget=2500',
+      `--screenshot=${tmpFile}`,
+      `http://127.0.0.1:${port}/`,
+    ], { windowsHide: true, stdio: 'ignore' });
+    let done = false;
+    let exitCode = null;
+    let spawnError = '';
+    const finish = () => {
+      if (done) return;
+      done = true;
+      let ok = false;
+      try {
+        if (fs.existsSync(tmpFile)) { fs.renameSync(tmpFile, target); ok = true; }
+      } catch (e) { spawnError = spawnError || e.message; }
+      try { fs.rmSync(tmpFile, { force: true }); } catch {}
+      try { fs.rmSync(profile, { recursive: true, force: true }); } catch {}
+      try {
+        fs.appendFileSync(path.join(PREVIEW_DIR, '.capture.log'), `${new Date().toISOString()} port=${port} ok=${ok} code=${exitCode} ${spawnError}\n`);
+      } catch {}
+      resolve({ ok, error: ok ? null : (spawnError || `captura vacía (exit ${exitCode})`) });
+    };
+    child.on('error', e => { spawnError = e.message; finish(); });
+    child.on('close', code => { exitCode = code; finish(); });
+    setTimeout(() => { try { child.kill(); } catch {} finish(); }, 30000);
+  });
+}
+
+function pumpPreviews() {
+  while (previewRunning < PREVIEW_MAX && previewQueue.length) {
+    const port = previewQueue.shift();
+    previewRunning += 1;
+    capturePreview(port).catch(() => {}).finally(() => {
+      previewRunning -= 1;
+      previewPending.delete(port);
+      pumpPreviews();
+    });
+  }
+}
+
+function enqueuePreview(port) {
+  if (previewPending.has(port)) return;
+  previewPending.add(port);
+  previewQueue.push(port);
+  pumpPreviews();
+}
+
+function sendPreview(res, file) {
+  fs.readFile(file, (err, data) => {
+    if (err) return json(res, 404, { error: 'sin vista previa' });
+    res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+    res.end(data);
   });
 }
 
@@ -1180,6 +1277,19 @@ async function handle(req, res, isLan) {
       const body = await readBody(req);
       const result = await switchPhp(body.branch);
       return json(res, result.ok ? 200 : 400, { ...result, active: activePhp() });
+    }
+    if (url.pathname === '/api/preview') {
+      const port = Number(url.searchParams.get('port'));
+      if (!port || port < 1 || port > 65535) return json(res, 400, { error: 'Puerto inválido' });
+      // Solo se capturan proyectos activos: si no responde, no hay vista previa.
+      if (!(await portOpen(port, 2500))) return json(res, 204, { up: false });
+      const file = path.join(PREVIEW_DIR, `${port}.png`);
+      const force = url.searchParams.get('force') === '1';
+      let st = null;
+      try { st = fs.statSync(file); } catch {}
+      if (st && !force && Date.now() - st.mtimeMs < PREVIEW_TTL) return sendPreview(res, file);
+      enqueuePreview(port);
+      return json(res, 202, { pending: true });
     }
     if (url.pathname === '/api/dump' && req.method === 'POST') {
       const body = await readBody(req);

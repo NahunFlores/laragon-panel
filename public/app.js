@@ -291,6 +291,7 @@ async function loadProjectStatuses() {
     const r = await api('/api/projects/status');
     siteStatuses = r.statuses || {};
     updateSiteDots();
+    setupPreviews();
   } catch {}
 }
 
@@ -315,6 +316,7 @@ function renderProjects() {
     const letter = esc((p.name || '?').trim().charAt(0).toUpperCase());
     const path = esc((p.root || '').replace(/^C:\/laragon\/www\//i, '~/'));
     return `<article class="project-card">
+      <div class="project-preview" data-preview="${p.port}" data-open="${p.port}" title="Abrir ${esc(p.name)}"><span class="pv-hint">cargando vista previa…</span></div>
       <div class="project-top">
         <div class="project-avatar">${letter}</div>
         <div>
@@ -336,6 +338,69 @@ function renderProjects() {
     </article>`;
   }).join('');
   updateSiteDots();
+  setupPreviews();
+}
+
+const previewObserver = ('IntersectionObserver' in window)
+  ? new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      previewObserver.unobserve(entry.target);
+      loadPreview(entry.target);
+    }
+  }, { rootMargin: '250px' })
+  : null;
+
+function setupPreviews() {
+  document.querySelectorAll('[data-preview]').forEach(el => {
+    if (el.classList.contains('has-shot')) return;
+    if (previewObserver) previewObserver.observe(el);
+    else loadPreview(el);
+  });
+}
+
+function previewTarget(el) {
+  const port = Number(el.dataset.preview);
+  const up = (siteStatuses[port] || 0) > 0;
+  if (!up) {
+    el.classList.add('no-shot');
+    el.innerHTML = '<span class="pv-hint">sitio apagado</span>';
+    return null;
+  }
+  el.classList.remove('no-shot');
+  return port;
+}
+
+async function loadPreview(el, attempt = 0) {
+  const port = Number(el.dataset.preview);
+  if (attempt === 0) {
+    if (previewTarget(el) === null) return;
+    el.innerHTML = '<span class="pv-hint">cargando vista previa…</span>';
+  }
+  try {
+    const res = await fetch(`/api/preview?port=${port}`, { cache: 'no-store' });
+    if (res.status === 200) {
+      const blob = await res.blob();
+      const img = new Image();
+      img.alt = `Vista previa del sitio en el puerto ${port}`;
+      img.src = URL.createObjectURL(blob);
+      el.innerHTML = '';
+      el.appendChild(img);
+      el.classList.add('has-shot');
+      return;
+    }
+    if (res.status === 204) {
+      el.classList.add('no-shot');
+      el.innerHTML = '<span class="pv-hint">sitio apagado</span>';
+      return;
+    }
+    if (res.status === 202 && attempt < 14) {
+      setTimeout(() => loadPreview(el, attempt + 1), 2500);
+      return;
+    }
+  } catch {}
+  el.classList.add('no-shot');
+  el.innerHTML = '<span class="pv-hint">sin vista previa</span>';
 }
 
 function serviceCard(name, label, s) {
