@@ -1,0 +1,9 @@
+{
+  "laragonRoot": "C:/laragon",
+  "mysqlPort": 3308,
+  "panelPort": 9090,
+  "lanPort": 9091,
+  "codePath": "",
+  "wtPath": "",
+  "legacyDumps": ""
+}

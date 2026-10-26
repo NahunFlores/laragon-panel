@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Laragon Panel</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">L</div>
+      <div>
+        <div class="brand-title">Laragon</div>
+        <div class="brand-sub">Control Panel</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-item active" data-view="dashboard">
+        <span class="nav-icon">◈</span> Dashboard
+      </button>
+      <button class="nav-item" data-view="services">
+        <span class="nav-icon">▣</span> Servicios
+      </button>
+      <button class="nav-item" data-view="projects">
+        <span class="nav-icon">▤</span> Proyectos <span class="pill" id="navProjectCount">0</span>
+      </button>
+      <button class="nav-item" data-view="databases">
+        <span class="nav-icon">◫</span> Bases de datos <span class="pill" id="navDbCount">0</span>
+      </button>
+      <button class="nav-item" data-view="backups">
+        <span class="nav-icon">⛁</span> Respaldos
+      </button>
+      <button class="nav-item" data-view="php">
+        <span class="nav-icon">⬡</span> PHP
+      </button>
+      <button class="nav-item" data-view="share">
+        <span class="nav-icon">⇄</span> Compartir
+      </button>
+      <button class="nav-item" data-view="logs">
+        <span class="nav-icon">▤</span> Logs
+      </button>
+      <button class="nav-item" data-view="settings">
+        <span class="nav-icon">⚙</span> Ajustes
+      </button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="mini-status">
+        <span class="dot" id="apacheDot"></span> Apache
+        <span class="mini-sep"></span>
+        <span class="dot" id="mysqlDot"></span> MySQL
+      </div>
+      <div class="muted small">127.0.0.1 · solo local</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="viewTitle">Dashboard</h1>
+        <p class="subtitle" id="viewSubtitle">Estado de tu entorno local</p>
+      </div>
+      <div class="top-actions">
+        <span class="clock" id="clock">--:--</span>
+        <button class="btn ghost" id="refreshBtn">↻ Actualizar</button>
+      </div>
+    </header>
+
+    <section class="view active" id="view-dashboard">
+      <div class="service-grid">
+        <article class="card service-card" id="apacheCard">
+          <div class="service-head">
+            <div class="service-icon apache">A</div>
+            <div>
+              <div class="service-name">Apache</div>
+              <div class="service-meta" id="apacheMeta">Puerto 80</div>
+            </div>
+            <span class="status-badge" id="apacheBadge"><span class="dot"></span> Detenido</span>
+          </div>
+          <div class="service-actions">
+            <button class="btn primary" data-service="apache" data-action="start">Iniciar</button>
+            <button class="btn ghost" data-service="apache" data-action="stop">Detener</button>
+            <button class="btn ghost" data-service="apache" data-action="restart">Reiniciar</button>
+          </div>
+        </article>
+
+        <article class="card service-card" id="mysqlCard">
+          <div class="service-head">
+            <div class="service-icon mysql">M</div>
+            <div>
+              <div class="service-name">MySQL</div>
+              <div class="service-meta" id="mysqlMeta">MySQL</div>
+            </div>
+            <span class="status-badge" id="mysqlBadge"><span class="dot"></span> Detenido</span>
+          </div>
+          <div class="service-actions">
+            <button class="btn primary" data-service="mysql" data-action="start">Iniciar</button>
+            <button class="btn ghost" data-service="mysql" data-action="stop">Detener</button>
+            <button class="btn ghost" data-service="mysql" data-action="restart">Reiniciar</button>
+          </div>
+        </article>
+      </div>
+
+      <div class="stats-grid">
+        <div class="card stat">
+          <div class="stat-label">Proyectos</div>
+          <div class="stat-value" id="statProjects">—</div>
+          <div class="stat-hint">con puerto asignado</div>
+        </div>
+        <div class="card stat">
+          <div class="stat-label">Bases de datos</div>
+          <div class="stat-value" id="statDbs">—</div>
+          <div class="stat-hint">en MySQL 8.4</div>
+        </div>
+        <div class="card stat">
+          <div class="stat-label">PHP activo</div>
+          <div class="stat-value accent" id="statPhp">—</div>
+          <div class="stat-hint">mod_php en Apache</div>
+        </div>
+        <div class="card stat">
+          <div class="stat-label">Disco libre</div>
+          <div class="stat-value" id="statDisk">—</div>
+          <div class="stat-hint" id="statDiskHint">C:</div>
+        </div>
+      </div>
+
+      <div class="sys-grid">
+        <div class="card sys-card">
+          <div class="sys-head"><span>CPU</span><strong id="sysCpuPct">—</strong></div>
+          <canvas id="cpuChart" class="spark" height="58"></canvas>
+          <div class="sys-meta" id="sysCpuInfo">—</div>
+        </div>
+        <div class="card sys-card">
+          <div class="sys-head"><span>RAM</span><strong id="sysRamPct">—</strong></div>
+          <canvas id="ramChart" class="spark" height="58"></canvas>
+          <div class="sys-meta" id="sysRamInfo">—</div>
+        </div>
+        <div class="card sys-card">
+          <div class="sys-head"><span>Disco C:</span><strong id="sysDiskPct">—</strong></div>
+          <div class="meter"><span id="sysDiskBar" style="width:0%"></span></div>
+          <div class="sys-meta" id="sysDiskInfo">—</div>
+        </div>
+        <div class="card sys-card">
+          <div class="sys-head"><span>Sistema</span><strong id="sysGpu">—</strong></div>
+          <div class="sys-meta" id="sysOsInfo">—</div>
+          <div class="sys-meta" id="sysUptime">—</div>
+        </div>
+      </div>
+
+      <div class="split">
+        <div class="card panel">
+          <div class="panel-head">
+            <h2>Acciones rápidas</h2>
+            <span class="muted small">sin esperar la interfaz de Laragon</span>
+          </div>
+          <div class="quick-grid">
+            <button class="quick" id="openWww">
+              <span class="quick-icon">⌂</span>
+              <span><strong>Abrir www</strong><small>http://127.0.0.1</small></span>
+            </button>
+            <button class="quick" id="openPhpInfo">
+              <span class="quick-icon">⬡</span>
+              <span><strong>Versiones PHP</strong><small>cambiar la activa</small></span>
+            </button>
+            <button class="quick" id="openDumps">
+              <span class="quick-icon">◫</span>
+              <span><strong>Dumps</strong><small>carpeta de respaldos</small></span>
+            </button>
+            <button class="quick" id="openPorts">
+              <span class="quick-icon">▤</span>
+              <span><strong>Puertos</strong><small>mapeo de proyectos</small></span>
+            </button>
+          </div>
+        </div>
+
+        <div class="card panel">
+          <div class="panel-head">
+            <h2>Entorno</h2>
+            <span class="muted small" id="envHost">—</span>
+          </div>
+          <div class="env-list">
+            <div><span>Sistema</span><strong id="envSystem">—</strong></div>
+            <div><span>CPU</span><strong id="envCpu">—</strong></div>
+            <div><span>RAM</span><strong id="envRam">—</strong></div>
+            <div><span>Uptime</span><strong id="envUptime">—</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card panel resource-panel">
+        <div class="panel-head">
+          <h2>Consumo por servicio</h2>
+          <span class="muted small">CPU / RAM / procesos</span>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr><th>Servicio</th><th>Estado</th><th>Procesos</th><th>RAM</th><th>CPU</th><th>Uso</th></tr>
+            </thead>
+            <tbody id="resourceBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-services">
+      <div class="service-grid" id="servicesGrid"></div>
+      <div class="card note">
+        Cada servicio se puede iniciar, detener o reiniciar por separado. Las apps Node se ejecutan en un puerto interno y Apache las publica.
+      </div>
+    </section>
+
+    <section class="view" id="view-projects">
+      <div class="toolbar">
+        <input class="search" id="projectSearch" placeholder="Buscar proyecto o puerto…">
+        <div class="toolbar-actions">
+          <span class="muted small" id="projectCountLabel"></span>
+          <button class="btn primary" id="newSiteBtn">+ Nuevo sitio</button>
+        </div>
+      </div>
+      <div class="project-grid" id="projectGrid"></div>
+    </section>
+
+    <section class="view" id="view-databases">
+      <div class="toolbar">
+        <input class="search" id="dbSearch" placeholder="Buscar base de datos…">
+        <div class="toolbar-actions">
+          <button class="btn primary" id="newDbBtn">+ Nueva base</button>
+          <button class="btn ghost" id="importBtn">Importar dump</button>
+          <button class="btn ghost" id="backupAllBtn">Backup total</button>
+          <button class="btn ghost" id="dbRefresh">↻</button>
+        </div>
+      </div>
+      <div class="card table-wrap">
+        <table class="table">
+          <thead>
+            <tr><th>Base de datos</th><th>Tablas</th><th>Tamaño</th><th class="right">Acciones</th></tr>
+          </thead>
+          <tbody id="dbBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="view" id="view-backups">
+      <div class="card panel backup-hero">
+        <div>
+          <div class="backup-title">Respaldos a disco externo</div>
+          <p class="muted small" style="margin:6px 0 0;max-width:660px;line-height:1.55">
+            Copia las bases de datos y los archivos de tus proyectos. Las reglas se registran en el
+            Programador de tareas de Windows, así que se ejecutan aunque el panel esté cerrado.
+          </p>
+        </div>
+        <div class="backup-actions">
+          <button class="btn ghost" id="backupRefresh">↻</button>
+          <button class="btn ghost" id="backupApply">Aplicar reglas al sistema</button>
+          <button class="btn primary" id="newBackupBtn">+ Nueva tarea</button>
+        </div>
+      </div>
+
+      <div class="card backup-progress" id="backupProgress" hidden>
+        <div class="spinner"></div>
+        <div class="backup-progress-body">
+          <strong id="backupProgressTitle">Respaldando…</strong>
+          <div class="muted small" id="backupProgressText">—</div>
+          <div class="progress-track"><span id="backupProgressBar" style="width:0%"></span></div>
+        </div>
+      </div>
+
+      <div class="backup-jobs" id="backupJobs"></div>
+
+      <div class="card panel">
+        <div class="panel-head">
+          <h2>Historial</h2>
+          <span class="muted small" id="backupHistoryInfo">—</span>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr><th>Fecha</th><th>Tarea</th><th>Tipo</th><th>Duración</th><th>Tamaño</th><th>Estado</th><th>Detalle</th></tr>
+            </thead>
+            <tbody id="backupHistoryBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card note">
+        <strong>Cómo funciona:</strong> cada ejecución crea una carpeta con fecha dentro de
+        <code>LaragonBackup\&lt;tarea&gt;</code> en el disco elegido. Por defecto genera
+        <strong>un ZIP por proyecto</strong> con su código y una carpeta <code>_database</code> adentro
+        con sus bases detectadas; las bases sin proyecto van en <code>_bases_sin_proyecto.zip</code>.
+        También incluye <code>manifest.json</code> y <code>respaldo.log</code>. La retención elimina las
+        copias más antiguas. Si el disco no está conectado, la ejecución se omite y se reintenta después.
+      </div>
+    </section>
+
+    <section class="view" id="view-php">
+      <div class="php-grid" id="phpGrid"></div>
+      <div class="card panel">
+        <div class="panel-head">
+          <h2>Extensiones PHP</h2>
+          <span class="muted small">php.ini activo: <span id="extPhp">—</span></span>
+        </div>
+        <div class="ext-grid" id="extGrid"></div>
+      </div>
+      <div class="card note">
+        <strong>Nota:</strong> las cuatro versiones están parcheadas contra PHP2Shell (CVE-2026-109618/109619)
+        e incluyen <code>sqlsrv</code> y <code>pdo_sqlsrv</code> (Microsoft Drivers 5.13.3 / 5.12.0 para 8.2).
+      </div>
+    </section>
+
+    <section class="view" id="view-logs">
+      <div class="toolbar">
+        <select id="logService" class="search log-select">
+          <option value="apache">Apache</option>
+          <option value="mysql">MySQL</option>
+        </select>
+        <input id="logSearch" class="search log-search" placeholder="Filtrar líneas…">
+        <div class="toolbar-actions">
+          <label class="check-label"><input type="checkbox" id="logAuto" checked> Auto</label>
+          <button class="btn ghost" id="logDownload">Descargar</button>
+          <button class="btn ghost" id="logRefresh">↻</button>
+        </div>
+      </div>
+      <pre class="log" id="logBox">Cargando…</pre>
+    </section>
+
+    <section class="view" id="view-share">
+      <div class="share-grid">
+        <div class="card panel">
+          <div class="panel-head">
+            <h2>Acceso al panel</h2>
+            <span class="muted small">red local</span>
+          </div>
+          <div class="field">
+            <label>IP de este equipo</label>
+            <select id="shareIp"></select>
+          </div>
+          <div class="field">
+            <label>URL del panel (con clave)</label>
+            <div class="copy-row">
+              <input id="shareLanUrl" readonly>
+              <button class="btn ghost" id="copyLan">Copiar</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>Clave de acceso</label>
+            <div class="copy-row">
+              <input id="shareKey" readonly>
+              <button class="btn ghost" id="copyKey">Copiar</button>
+            </div>
+          </div>
+          <div class="env-list">
+            <div><span>Local</span><strong id="shareLocalUrl">—</strong></div>
+            <div><span>LAN</span><strong id="shareLanPort">—</strong></div>
+          </div>
+          <button class="btn primary" id="firewallBtn" style="margin-top:14px;width:100%">Abrir puertos en el firewall</button>
+          <p class="muted small" style="margin-top:10px;line-height:1.5">
+            La clave protege el panel en la red. No compartas esta URL fuera de tu red local.
+          </p>
+        </div>
+
+        <div class="card panel">
+          <div class="panel-head">
+            <h2>Proyectos en red</h2>
+            <span class="muted small" id="shareCount">—</span>
+          </div>
+          <div class="share-projects" id="shareProjects"></div>
+        </div>
+      </div>
+      <div class="card note">
+        Desde otro dispositivo de la misma red entra a <code>http://IP:9091</code> con la clave.
+        Los proyectos se abren en <code>http://IP:PUERTO</code>. Si no carga, usa el botón de firewall y acepta el UAC.
+      </div>
+    </section>
+
+    <section class="view" id="view-settings">
+      <div class="settings-grid">
+        <div class="card panel">
+          <div class="panel-head"><h2>Rutas</h2><span class="muted small">relativas a Laragon</span></div>
+          <div class="env-list">
+            <div><span>Laragon</span><strong>.</strong></div>
+            <div><span>Proyectos</span><strong>www</strong></div>
+            <div><span>Apache</span><strong>bin\apache</strong></div>
+            <div><span>MySQL</span><strong>bin\mysql</strong></div>
+            <div><span>Vhosts</span><strong>conf\extra\httpd-vhosts.conf</strong></div>
+            <div><span>Mapeo</span><strong>puertos.txt</strong></div>
+          </div>
+        </div>
+        <div class="card panel">
+          <div class="panel-head"><h2>Accesos</h2></div>
+          <div class="env-list">
+            <div><span>Sitio principal</span><strong><a href="http://127.0.0.1" target="_blank">127.0.0.1</a></strong></div>
+            <div><span>MySQL</span><strong id="settingsMysql">—</strong></div>
+            <div><span>PHP por defecto</span><strong id="settingsPhp">—</strong></div>
+            <div><span>Panel</span><strong id="settingsPanel">—</strong></div>
+            <div><span>Config</span><strong>panel.config.json</strong></div>
+            <div><span>LEEME</span><strong>LEEME.txt</strong></div>
+          </div>
+        </div>
+        <div class="card panel">
+          <div class="panel-head"><h2>Aplicación de escritorio</h2><span class="muted small">Electron</span></div>
+          <div id="desktopSettings" class="env-list">
+            <div class="muted">Cargando…</div>
+          </div>
+        </div>
+      </div>
+      <div class="card note">
+        Panel independiente de Laragon. Si Apache o MySQL se detienen, este panel sigue disponible para levantarlos.
+      </div>
+    </section>
+  </main>
+
+  <div class="modal-backdrop" id="modal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3 id="modalTitle">Título</h3>
+        <button class="modal-x" id="modalClose" aria-label="Cerrar">×</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-foot" id="modalFoot"></div>
+    </div>
+  </div>
+
+  <div class="toast-wrap" id="toasts"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

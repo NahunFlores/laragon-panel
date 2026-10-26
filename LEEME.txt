@@ -1,0 +1,104 @@
+LARAGON PANEL
+=============
+Panel propio para controlar Laragon sin abrir su interfaz.
+
+Requisitos: Node.js 18+.
+
+INICIAR
+-------
+- App de escritorio: doble clic en "Laragon Panel" (Escritorio) o en
+  C:\laragon-panel\electron-app\node_modules\electron\dist\electron.exe
+- Panel web: doble clic en iniciar-panel.vbs  → http://127.0.0.1:9090
+- Inicio con Windows: acceso directo en
+  %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Laragon Panel.lnk
+  (se puede desactivar desde Ajustes o el menú de la bandeja).
+
+APP DE ESCRITORIO (Windows / Electron)
+---------------------------------------
+- Arranca en segundo plano si se inicia con Windows.
+- Icono en la bandeja: doble clic abre el panel.
+- Clic derecho: estados de Apache/MySQL, iniciar/detener/reiniciar,
+  Servicios, Logs, Inicio con Windows, Notificaciones, Salir.
+- Notificaciones cuando un servicio cambia de estado y al iniciar.
+- Cerrar la ventana la oculta en la bandeja.
+- "Salir" deja los servicios; "Salir y detener servicios" apaga
+  Apache, MySQL y las apps Node.
+- Al iniciar, levanta Apache/MySQL si están detenidos.
+
+SERVICIOS
+---------
+- Vista Servicios: Apache, MySQL y apps Node por separado.
+- Cada una se puede iniciar, detener o reiniciar.
+- Node corre en un puerto interno (3100+) y Apache lo publica.
+
+LOGS
+----
+- Apache, MySQL y apps Node.
+- Filtro de líneas, auto-refresh, descarga.
+- Errores en rojo y warnings en ámbar.
+
+COMPARTIR EN LAN
+----------------
+- Panel local: http://127.0.0.1:9090
+- Panel LAN: http://IP-DEL-EQUIPO:9091 con clave
+- Clave: C:\laragon-panel\lan-key.txt (también en Compartir)
+- Proyectos: http://IP:PUERTO (8001-8100)
+- Botón de firewall para abrir 9091, 8001-8100 y 80.
+- La Wi-Fi de esta PC está en perfil Público, por eso las reglas
+  aplican a todos los perfiles. No compartas en redes públicas ajenas.
+- El panel tiene clave; los proyectos no.
+
+NUEVO SITIO
+-----------
+- PHP puro (index.php)
+- HTML estático (index.html)
+- Laravel (Composer + SQLite + migrate)
+- Node.js (server.js + proxy Apache + arranque automático)
+- Enlazar carpeta existente (detecta Laravel/PHP/HTML/Node)
+Los sitios nuevos se agregan solos a Compartir (http://IP:PUERTO).
+
+PHP / SQL SERVER
+----------------
+- PHP: 8.2.35, 8.3.36, 8.4.27, 8.5.12 (parcheadas PHP2Shell).
+- Cambio de versión activa y extensiones ON/OFF.
+- ODBC Driver 17 + sqlsrv/pdo_sqlsrv en las 4 versiones.
+
+BASES DE DATOS
+--------------
+- MySQL 8.4.3 en 127.0.0.1:3308, root sin contraseña.
+- Listar, dump, crear, borrar, importar dump, backup total.
+
+RESPALDOS A DISCO EXTERNO
+-------------------------
+- Menú Respaldos → "+ Nueva tarea".
+- Elige disco (C:, D: o un USB/externo conectado) y carpeta.
+- Incluye todas o algunas bases de datos y todos o algunos proyectos.
+- Frecuencia: solo manual, diaria, semanal o cada N horas.
+- Retención: cuántas copias conservar (borra las más antiguas).
+- "Ejecutar ahora" lanza el respaldo en segundo plano.
+- "Aplicar reglas al sistema" registra la tarea en el Programador de
+  tareas de Windows, así corre aunque el panel esté cerrado.
+- Cada copia queda en:
+  DISCO:\LaragonBackup\<tarea>\<AAAA-MM-DD_HH-mm-ss>\
+    projects\<proyecto>.zip          (código + _database\<base>.sql)
+    projects\_bases_sin_proyecto.zip (bases que no pertenecen a un proyecto)
+    manifest.json                    (qué se copió, tamaño, duración, errores)
+    respaldo.log
+- Por defecto todo va comprimido y agrupado por proyecto. Detecta la base de
+  cada proyecto leyendo .env, wp-config.php, config/database.php, etc.
+- Si desmarcas "Comprimir por proyecto" se guardan carpetas y .sql sueltos.
+- Si el disco no está conectado, la ejecución programada se omite y se
+  reintenta después; no se borra nada.
+- Si MySQL está detenido al iniciar el respaldo, se arranca solo.
+- Configuración: C:\laragon-panel\backups.json
+- Logs de tareas: C:\laragon-panel\backups\
+- La app avisa en la bandeja al terminar un respaldo.
+- Los respaldos solo se administran desde el equipo local, no por LAN.
+
+NOTAS
+-----
+- Panel web: 127.0.0.1:9090. LAN: 0.0.0.0:9091 con clave.
+- Vhosts: C:\laragon\bin\apache\...\conf\extra\httpd-vhosts.conf
+- Mapeo: C:\laragon\puertos.txt
+- Respaldos: C:\Backup_Laragon_2026-10-24
+- PHP activo: 8.3.36.

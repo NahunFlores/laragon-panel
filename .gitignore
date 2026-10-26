@@ -1,0 +1,48 @@
+# Dependencias y artefactos de compilación
+electron-app/node_modules/
+dist/
+out/
+release/
+
+# Configuración local (cada equipo tiene la suya)
+panel.config.json
+backups.json
+desktop-settings.json
+*.pid
+lan-key.txt
+
+# Generado en tiempo de ejecución
+backups/
+apply-backup-tasks.ps1
+firewall.ps1
+backup-task-*.cmd
+
+# Logs
+*.log
+
+# Secretos y credenciales
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+secrets/
+credentials*
+
+# Bases de datos y dumps
+*.sql
+*.sql.gz
+*.dump
+*.bak
+
+# Archivos comprimidos de respaldo
+*.zip
+*.7z
+*.rar
+
+# Sistema
+Thumbs.db
+.DS_Store
+desktop.ini
