@@ -154,6 +154,8 @@ function phpVersions() {
       exe: path.join(base, 'php.exe'),
       ini: path.join(base, 'php.ini'),
       base,
+      ts: fs.existsSync(path.join(base, 'php8ts.dll')),
+      apache: fs.existsSync(path.join(base, 'php8apache2_4.dll')),
     };
   }).sort((a, b) => a.short.localeCompare(b.short, undefined, { numeric: true }));
 }
@@ -793,16 +795,26 @@ function openTool(target, tool) {
 
 async function switchPhp(branch) {
   const list = phpVersions();
-  const target = list.find(p => p.branch === branch);
+  // Preferir la version mas nueva de la rama que tenga php8apache2_4.dll (mod_php) y, entre iguales, la ZTS.
+  const candidates = list
+    .filter(p => p.branch === branch && p.apache)
+    .sort((a, b) => (b.short.localeCompare(a.short, undefined, { numeric: true })) || (Number(b.ts) - Number(a.ts)));
+  const target = candidates[0] || list.find(p => p.branch === branch);
   if (!target) return { ok: false, error: 'Versión no instalada' };
   const dll = path.join(target.base, 'php8apache2_4.dll');
   if (!fs.existsSync(dll)) return { ok: false, error: 'php8apache2_4.dll no encontrado' };
-  const conf = `# PHP ${target.short} (panel)\nLoadModule php_module "${dll.replace(/\\/g, '/')}"\nPHPIniDir "${target.base.replace(/\\/g, '/')}"\n<IfModule mime_module>\n    AddType application/x-httpd-php .php\n</IfModule>\n`;
+  const dir = target.base.replace(/\\/g, '/');
+  let conf = `# PHP ${target.short} (panel)\n`;
+  // Apache puede cargar su propia libssl; precargar las de PHP evita conflictos de version.
+  for (const lib of ['libcrypto-3-x64.dll', 'libssl-3-x64.dll']) {
+    if (fs.existsSync(path.join(target.base, lib))) conf += `LoadFile "${dir}/${lib}"\n`;
+  }
+  conf += `LoadModule php_module "${dir}/php8apache2_4.dll"\nPHPIniDir "${dir}"\n<IfModule mime_module>\n    AddType application/x-httpd-php .php\n</IfModule>\n`;
   fs.writeFileSync(path.join(LARAGON, 'etc', 'apache2', 'mod_php.conf'), conf, 'utf8');
   try { setIniValue(path.join(LARAGON, 'usr', 'laragon.ini'), 'php', 'Version', target.folder); } catch {}
   const wasUp = await portOpen(80);
   if (wasUp) { await stopService('apache'); await startService('apache'); }
-  return { ok: true, active: target.short };
+  return { ok: true, active: target.short, folder: target.folder };
 }
 
 async function dumpDatabase(db) {
