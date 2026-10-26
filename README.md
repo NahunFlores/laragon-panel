@@ -30,48 +30,37 @@ Panel de control privado para **Laragon** en Windows. Sustituye la interfaz de L
 
 ## Instalación rápida en otro Laragon
 
-1. Instala Laragon y deja Apache/MySQL funcionando.
-2. Clona este repositorio en una ruta sin espacios, por ejemplo:
+La forma recomendada es el instalador, que detecta Laragon, la carpeta de proyectos y PHP:
 
-   ```bat
-   git clone https://github.com/NahunFlores/laragon-panel.git C:\tools\laragon-panel
-   cd C:\tools\laragon-panel
-   ```
+```bat
+node instalar.js --laragon "D:\ruta\de\laragon"
+```
 
-3. Instala las dependencias de la app de escritorio:
+Sin `--laragon` se autodetecta (rutas típicas, `LARAGON_ROOT` y el menú de inicio).
+El instalador escribe `panel.config.json`, genera `lan-key.txt` y deja activa una
+versión de PHP **sin vulnerabilidades conocidas** (ver más abajo). Puedes ver qué haría
+antes de tocar nada con `node instalar.js --dry-run`.
 
-   ```bat
-   cd electron-app
-   npm install
-   cd ..
-   ```
+Después, instala las dependencias de la app de escritorio si las quieres usar:
 
-4. Crea tu configuración local:
+```bat
+cd electron-app
+npm install
+cd ..
+```
 
-   ```bat
-   copy panel.config.example.json panel.config.json
-   ```
+### Instalación asistida desde OpenCode
 
-5. Edita `panel.config.json` con la ruta real de Laragon y el puerto de MySQL:
+Este repositorio incluye reglas para el agente (`AGENTS.md`) y el comando `/instalar-panel`.
 
-   ```json
-   {
-     "laragonRoot": "C:/laragon",
-     "mysqlPort": 3308,
-     "panelPort": 9090,
-     "lanPort": 9091
-   }
-   ```
+```bat
+cd C:\tools\laragon-panel
+opencode
+/instalar-panel D:\ruta\de\laragon
+```
 
-   Laragon suele usar MySQL en `3306`. Este panel se preparó originalmente con `3308`; usa el puerto real de tu instalación.
-
-6. Arranca:
-
-   - **Panel web:** doble clic en `iniciar-panel.vbs` y abre `http://127.0.0.1:9090`.
-   - **App de escritorio:** ejecuta `electron-app\node_modules\electron\dist\electron.exe electron-app` o crea un acceso directo.
-   - En desarrollo: `node server.js` y, en otra consola, `cd electron-app && npm start`.
-
-7. Abre **Ajustes** y comprueba que Apache, MySQL y PHP se detectan correctamente.
+El agente ejecuta el instalador, verifica que PHP quede parcheado y comprueba la API
+(`/api/overview`, `/api/projects`, `/api/logs`, `/api/preview`) antes de dar por terminada la instalación.
 
 ## Configuración
 
@@ -172,6 +161,26 @@ Las tareas se registran en el **Programador de tareas de Windows** con el nombre
 
 > `tar.exe` (incluido en Windows 10/11) se usa para crear los ZIP. Si no está disponible, desmarca “Comprimir por proyecto”.
 
+## PHP sin vulnerabilidades
+
+El instalador busca siempre una versión de PHP parcheada contra `CVE-2026-109618` / `CVE-2026-109619`
+("php2shell"). Mínimos por rama:
+
+| Rama | Versión mínima |
+|---|---|
+| 8.1 | 8.1.34 |
+| 8.2 | 8.2.35 |
+| 8.3 | 8.3.36 |
+| 8.4 | 8.4.27 |
+| 8.5 | 8.5.12 |
+
+- Si ya hay una instalada, la activa (debe ser x64 **ZTS** con `php8apache2_4.dll`).
+- Si no hay ninguna, descarga el último build x64 ZTS de `windows.php.net`, lo instala en `bin\php`,
+  copia `php.ini` y las extensiones de la versión anterior (`sqlsrv`, `pdo_sqlsrv`, `redis`) y lo deja activo.
+- `node instalar.js --check-php` muestra los builds disponibles y cuáles están parcheados.
+
+El panel muestra la versión activa en **PHP** y el instalador marca en el resumen cuáles quedaron vulnerables.
+
 ## App de escritorio
 
 - Bandeja del sistema, notificaciones y cierre a bandeja.
@@ -239,6 +248,8 @@ Comprueba que `C:\Windows\System32\tar.exe` exista; si no, usa el modo sin compr
 ```
 server.js                 API y servidor web
 config.js                 configuración (panel.config.json / variables de entorno)
+instalar.js               instalador: detecta Laragon, escribe config y deja PHP parcheado
+AGENTS.md                 reglas para el agente (instalación/verificación)
 backup.js                 motor de respaldos y tareas de Windows
 backup-runner.js          ejecutor sin interfaz (Programador de tareas)
 public/                   interfaz web
