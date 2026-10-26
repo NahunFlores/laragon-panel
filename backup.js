@@ -15,11 +15,11 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 
-const { laragonRoot, mysqlPort } = require('./config');
+const { laragonRoot, mysqlPort, wwwRoot } = require('./config');
 
 const LARAGON = laragonRoot;
 const MYSQL_PORT = mysqlPort;
-const WWW = path.join(LARAGON, 'www');
+const WWW = wwwRoot;
 const PANEL_DIR = __dirname;
 const BACKUP_DIR = path.join(PANEL_DIR, 'backups');
 const CONFIG_FILE = path.join(PANEL_DIR, 'backups.json');

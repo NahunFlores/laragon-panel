@@ -30,6 +30,52 @@ function getLanKey() {
 
 const LAN_KEY = getLanKey();
 
+const LAN_SESSIONS = new Map();
+const LAN_FAILS = new Map();
+const LAN_SESSION_TTL = 12 * 60 * 60 * 1000;
+const LAN_MAX_FAILS = 5;
+const LAN_FAIL_WINDOW = 5 * 60 * 1000;
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, exp] of LAN_SESSIONS) if (exp <= now) LAN_SESSIONS.delete(token);
+  for (const [ip, r] of LAN_FAILS) if (r.until <= now) LAN_FAILS.delete(ip);
+}, 5 * 60 * 1000).unref();
+
+function safeEqual(a, b) {
+  const x = Buffer.from(String(a == null ? '' : a), 'utf8');
+  const y = Buffer.from(String(b == null ? '' : b), 'utf8');
+  if (x.length !== y.length) return false;
+  return crypto.timingSafeEqual(x, y);
+}
+
+function newLanSession() {
+  const token = crypto.randomBytes(24).toString('hex');
+  LAN_SESSIONS.set(token, Date.now() + LAN_SESSION_TTL);
+  return token;
+}
+
+function lanSessionValid(token) {
+  if (!token) return false;
+  const exp = LAN_SESSIONS.get(token);
+  if (!exp) return false;
+  if (exp <= Date.now()) { LAN_SESSIONS.delete(token); return false; }
+  return true;
+}
+
+function lanFails(ip) {
+  const r = LAN_FAILS.get(ip);
+  if (!r || r.until <= Date.now()) return 0;
+  return r.count;
+}
+
+function lanRegisterFail(ip) {
+  const r = LAN_FAILS.get(ip) && LAN_FAILS.get(ip).until > Date.now() ? LAN_FAILS.get(ip) : { count: 0, until: 0 };
+  r.count += 1;
+  r.until = Date.now() + LAN_FAIL_WINDOW;
+  LAN_FAILS.set(ip, r);
+}
+
 function parseCookies(header) {
   const out = {};
   (header || '').split(';').forEach(part => {
@@ -38,7 +84,7 @@ function parseCookies(header) {
   });
   return out;
 }
-const WWW = path.join(LARAGON, 'www');
+const WWW = config.wwwRoot;
 const PUBLIC = path.join(__dirname, 'public');
 
 function listDirs(dir) {
@@ -49,17 +95,36 @@ function listDirs(dir) {
   } catch { return []; }
 }
 
+function iniSectionValue(section, key) {
+  try {
+    const text = fs.readFileSync(path.join(LARAGON, 'usr', 'laragon.ini'), 'utf8');
+    let current = '';
+    for (const line of text.split(/\r?\n/)) {
+      const sec = line.match(/^\s*\[([^\]]+)\]/);
+      if (sec) { current = sec[1].trim().toLowerCase(); continue; }
+      if (current !== section.toLowerCase()) continue;
+      const kv = line.match(/^\s*([^=]+?)\s*=\s*(.*)$/);
+      if (kv && kv[1].trim().toLowerCase() === key.toLowerCase()) return kv[2].trim();
+    }
+  } catch {}
+  return '';
+}
+
+function pickVersionDir(baseDir, prefix, iniVersion) {
+  const dirs = listDirs(baseDir).filter(d => d.startsWith(prefix)).sort();
+  if (iniVersion && dirs.includes(iniVersion)) return iniVersion;
+  return dirs[dirs.length - 1];
+}
+
 function pickApache() {
-  const dirs = listDirs(path.join(LARAGON, 'bin', 'apache')).filter(d => d.startsWith('httpd-')).sort();
-  const name = dirs[dirs.length - 1];
+  const name = pickVersionDir(path.join(LARAGON, 'bin', 'apache'), 'httpd-', iniSectionValue('apache', 'version'));
   if (!name) return null;
   const base = path.join(LARAGON, 'bin', 'apache', name);
   return { name, base, exe: path.join(base, 'bin', 'httpd.exe'), conf: path.join(base, 'conf', 'httpd.conf'), logs: path.join(base, 'logs') };
 }
 
 function pickMysql() {
-  const dirs = listDirs(path.join(LARAGON, 'bin', 'mysql')).filter(d => d.startsWith('mysql-')).sort();
-  const name = dirs[dirs.length - 1];
+  const name = pickVersionDir(path.join(LARAGON, 'bin', 'mysql'), 'mysql-', iniSectionValue('mysql', 'version'));
   if (!name) return null;
   const base = path.join(LARAGON, 'bin', 'mysql', name);
   return {
@@ -156,7 +221,7 @@ async function startService(name) {
     if (await portOpen(80)) return { ok: true, already: true };
     startDetached(apache.exe, [], path.join(apache.base, 'bin'));
     const up = await waitPort(80);
-    return { ok: up, error: up ? null : 'Apache no arranc?? (revisa logs)' };
+    return { ok: up, error: up ? null : 'Apache no arrancó (revisa logs)' };
   }
   if (name === 'mysql') {
     if (!mysql) return { ok: false, error: 'MySQL no encontrado' };
@@ -180,7 +245,7 @@ async function startService(name) {
       launch();
       up = await waitPort(MYSQL_PORT, 30000);
     }
-    return { ok: up, error: up ? null : 'MySQL no arranc?? (revisa logs)' };
+    return { ok: up, error: up ? null : 'MySQL no arrancó (revisa logs)' };
   }
   return { ok: false, error: 'Servicio desconocido' };
 }
@@ -241,6 +306,50 @@ function detectProjectType(root) {
   return 'static';
 }
 
+function readApacheDefines() {
+  const out = {};
+  if (!apache) return out;
+  try {
+    const text = fs.readFileSync(apache.conf, 'utf8');
+    const re = /^\s*Define\s+([A-Za-z0-9_]+)\s+"?([^"\r\n]+)"?\s*$/gim;
+    let m;
+    while ((m = re.exec(text))) out[m[1]] = m[2].trim().replace(/\\/g, '/');
+  } catch {}
+  return out;
+}
+
+function projectName(root) {
+  const clean = root.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (/\/public$/i.test(clean)) return path.basename(path.dirname(clean));
+  return path.basename(clean);
+}
+
+// Puertos reales tomados de httpd-vhosts.conf cuando no hay puertos.csv.
+function readVhostProjects() {
+  if (!apache) return [];
+  let text = '';
+  try { text = fs.readFileSync(path.join(apache.base, 'conf', 'extra', 'httpd-vhosts.conf'), 'utf8'); } catch { return []; }
+  const defines = readApacheDefines();
+  const out = [];
+  const seen = new Set();
+  const re = /<VirtualHost\s*\*:(\d+)>([\s\S]*?)<\/VirtualHost>/gi;
+  let m;
+  while ((m = re.exec(text))) {
+    const port = Number(m[1]);
+    if (!port || port === 80 || seen.has(port)) continue;
+    const dr = m[2].match(/DocumentRoot\s+"([^"]+)"/i);
+    if (!dr) continue;
+    let root = dr[1];
+    for (const [k, v] of Object.entries(defines)) root = root.split('${' + k + '}').join(v);
+    root = root.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (/[${}]/.test(root) || !/^[A-Za-z]:\//.test(root)) continue;
+    if (!fs.existsSync(root)) continue;
+    seen.add(port);
+    out.push({ port, name: projectName(root), root, url: `http://127.0.0.1:${port}`, public: /\/public$/i.test(root), type: detectProjectType(root) });
+  }
+  return out.sort((a, b) => a.port - b.port);
+}
+
 function readProjects() {
   const csv = path.join(LARAGON, 'puertos.csv');
   const projects = [];
@@ -260,13 +369,19 @@ function readProjects() {
       });
     }
   } catch {}
-  if (!projects.length) {
-    const dirs = listDirs(WWW).filter(d => !['Respaldos', 'moodledata', 'node_modules'].includes(d)).sort();
-    let p = 8001;
-    for (const d of dirs) {
-      const root = path.join(WWW, d).replace(/\\/g, '/');
-      projects.push({ port: p++, name: d, root, url: `http://127.0.0.1:${p - 1}`, public: false, type: detectProjectType(root) });
-    }
+  if (!projects.length) projects.push(...readVhostProjects());
+  const known = new Set(projects.map(p => (p.root || '').toLowerCase()));
+  const dirs = listDirs(WWW)
+    .filter(d => !d.startsWith('.') && !['Respaldos', 'moodledata', 'node_modules'].includes(d))
+    .sort();
+  let next = projects.reduce((max, p) => Math.max(max, p.port), 8000) + 1;
+  for (const d of dirs) {
+    const root = path.join(WWW, d).replace(/\\/g, '/');
+    if (known.has(root.toLowerCase())) continue;
+    const dup = projects.some(p => (p.root || '').toLowerCase().startsWith(root.toLowerCase() + '/'));
+    if (dup) continue;
+    projects.push({ port: next, name: d, root, url: `http://127.0.0.1:${next}`, public: false, type: detectProjectType(root) });
+    next += 1;
   }
   return projects;
 }
@@ -359,7 +474,7 @@ function getExtensions() {
 async function toggleExtension(name, enabled) {
   const p = activePhpObj();
   if (!p || !fs.existsSync(p.ini)) return { ok: false, error: 'PHP activo no encontrado' };
-  if (!EXTENSIONS.includes(name)) return { ok: false, error: 'Extensi??n no permitida' };
+  if (!EXTENSIONS.includes(name)) return { ok: false, error: 'Extensión no permitida' };
   const lines = fs.readFileSync(p.ini, 'utf8').split(/\r?\n/);
   const re = extRegex(name);
   const indices = lines.map((l, i) => re.test(l) ? i : -1).filter(i => i >= 0);
@@ -502,10 +617,10 @@ async function createSite(body) {
   const type = body.type || 'php';
   const existing = String(body.path || '').trim();
   if (type === 'link') {
-    if (!existing || !fs.existsSync(existing) || !fs.statSync(existing).isDirectory()) return { ok: false, error: 'Carpeta no v??lida' };
+    if (!existing || !fs.existsSync(existing) || !fs.statSync(existing).isDirectory()) return { ok: false, error: 'Carpeta no válida' };
     name = path.basename(existing);
   }
-  if (!/^[A-Za-z0-9._ -]{1,60}$/.test(name)) return { ok: false, error: 'Nombre inv??lido' };
+  if (!/^[A-Za-z0-9._ -]{1,60}$/.test(name)) return { ok: false, error: 'Nombre inválido' };
 
   let root = type === 'link' ? existing : path.join(WWW, name);
   let nodeInternal = null;
@@ -517,7 +632,7 @@ async function createSite(body) {
     if (type === 'laravel') {
       const p = activePhpObj();
       const r = await run(p.exe, [COMPOSER, 'create-project', 'laravel/laravel', root, '--prefer-dist', '--no-interaction'], { timeout: 600000, maxBuffer: 10 * 1024 * 1024 });
-      if (r.code !== 0) return { ok: false, error: (r.stderr || r.stdout || 'Composer fall??').slice(0, 2000) };
+      if (r.code !== 0) return { ok: false, error: (r.stderr || r.stdout || 'Composer falló').slice(0, 2000) };
       ensureSqliteDriver();
       try {
         const dbFile = path.join(root, 'database', 'database.sqlite');
@@ -563,7 +678,7 @@ http.createServer((req, res) => {
   if (await portOpen(80)) {
     await stopService('apache');
     const r = await startService('apache');
-    if (!r.ok) return { ok: false, error: `Sitio creado, pero Apache no reinici??: ${r.error || ''}` };
+    if (!r.ok) return { ok: false, error: `Sitio creado, pero Apache no reinició: ${r.error || ''}` };
   }
   return { ok: true, project: { name, port, root: docRoot.replace(/\\/g, '/'), url: `http://127.0.0.1:${port}`, type: type === 'link' ? detectProjectType(docRoot) : type } };
 }
@@ -602,7 +717,7 @@ async function importDump(file) {
 }
 
 async function dbAction(action, name) {
-  if (!/^[A-Za-z0-9_$.-]{1,64}$/.test(name)) return { ok: false, error: 'Nombre inv??lido' };
+  if (!/^[A-Za-z0-9_$.-]{1,64}$/.test(name)) return { ok: false, error: 'Nombre inválido' };
   const sql = action === 'create'
     ? `CREATE DATABASE IF NOT EXISTS \`${name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`
     : `DROP DATABASE \`${name}\`;`;
@@ -672,14 +787,14 @@ function openTool(target, tool) {
     } else {
       spawn(WT, ['-d', p], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
     }
-  } else return { ok: false, error: 'Herramienta inv??lida' };
+  } else return { ok: false, error: 'Herramienta inválida' };
   return { ok: true };
 }
 
 async function switchPhp(branch) {
   const list = phpVersions();
   const target = list.find(p => p.branch === branch);
-  if (!target) return { ok: false, error: 'Versi??n no instalada' };
+  if (!target) return { ok: false, error: 'Versión no instalada' };
   const dll = path.join(target.base, 'php8apache2_4.dll');
   if (!fs.existsSync(dll)) return { ok: false, error: 'php8apache2_4.dll no encontrado' };
   const conf = `# PHP ${target.short} (panel)\nLoadModule php_module "${dll.replace(/\\/g, '/')}"\nPHPIniDir "${target.base.replace(/\\/g, '/')}"\n<IfModule mime_module>\n    AddType application/x-httpd-php .php\n</IfModule>\n`;
@@ -692,7 +807,7 @@ async function switchPhp(branch) {
 
 async function dumpDatabase(db) {
   if (!mysql) return { ok: false, error: 'MySQL no encontrado' };
-  if (!/^[A-Za-z0-9_$.-]+$/.test(db)) return { ok: false, error: 'Nombre inv??lido' };
+  if (!/^[A-Za-z0-9_$.-]+$/.test(db)) return { ok: false, error: 'Nombre inválido' };
   const dir = path.join(LARAGON, 'backups', 'db');
   fs.mkdirSync(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
@@ -721,10 +836,18 @@ function diskInfo() {
   } catch { return null; }
 }
 
+function sendSession(res, token) {
+  res.writeHead(302, {
+    'Set-Cookie': `laragon_sess=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(LAN_SESSION_TTL / 1000)}`,
+    Location: '/',
+  });
+  return res.end();
+}
+
 function serveLogin(res, error = '') {
   const html = `<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Laragon Panel ?? Acceso</title>
+<title>Laragon Panel · Acceso</title>
 <style>
   body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(800px 500px at 20% 0%,rgba(34,211,238,.16),transparent 60%),#070b14;color:#e8eefb;font-family:Inter,system-ui,sans-serif}
   .box{width:min(380px,90vw);background:linear-gradient(180deg,#0e1829,#111f36);border:1px solid rgba(148,163,184,.2);border-radius:18px;padding:26px;box-shadow:0 18px 50px rgba(0,0,0,.4)}
@@ -739,9 +862,9 @@ function serveLogin(res, error = '') {
 <div class="box">
   <div class="mark">L</div>
   <h1>Laragon Panel</h1>
-  <p>Acceso desde la red local. Introduce la clave que aparece en el panel local, secci??n <strong>Compartir</strong>.</p>
-  <form method="get" action="/">
-    <input name="key" placeholder="Clave de acceso" autofocus autocomplete="off">
+  <p>Acceso desde la red local. Introduce la clave que aparece en el panel local, sección <strong>Compartir</strong>.</p>
+  <form method="post" action="/login">
+    <input name="key" type="password" placeholder="Clave de acceso" autofocus autocomplete="off">
     <button type="submit">Entrar</button>
   </form>
   ${error ? `<div class="err">${error}</div>` : ''}
@@ -882,7 +1005,7 @@ function serveStatic(req, res) {
   let rel = decodeURIComponent(req.url.split('?')[0]);
   if (rel === '/' || rel === '') rel = '/index.html';
   const file = path.join(PUBLIC, rel);
-  if (!file.startsWith(PUBLIC)) return json(res, 403, { error: 'forbidden' });
+  if (file !== PUBLIC && !file.startsWith(PUBLIC + path.sep)) return json(res, 403, { error: 'forbidden' });
   fs.readFile(file, (err, data) => {
     if (err) return json(res, 404, { error: 'not found' });
     const ext = path.extname(file).toLowerCase();
@@ -901,25 +1024,49 @@ function readBody(req) {
   });
 }
 
+function readForm(req) {
+  return new Promise(resolve => {
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 1e5) req.destroy(); });
+    req.on('end', () => {
+      const out = {};
+      try { new URLSearchParams(body).forEach((v, k) => { out[k] = v; }); } catch {}
+      resolve(out);
+    });
+    req.on('error', () => resolve({}));
+  });
+}
+
 async function handle(req, res, isLan) {
   try {
     const url = new URL(req.url, 'http://127.0.0.1');
 
     if (isLan) {
-      const qkey = url.searchParams.get('key');
-      if (qkey && qkey === LAN_KEY) {
-        res.writeHead(302, {
-          'Set-Cookie': `laragon_lan=${LAN_KEY}; HttpOnly; SameSite=Lax; Path=/`,
-          Location: '/',
-        });
-        return res.end();
-      }
+      const ip = (req.socket && req.socket.remoteAddress) || 'desconocido';
       const cookies = parseCookies(req.headers.cookie);
-      if (cookies.laragon_lan !== LAN_KEY) {
-        if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
-          return serveLogin(res, qkey ? 'Clave incorrecta' : '');
+      const authed = lanSessionValid(cookies.laragon_sess);
+      const isLoginPage = url.pathname === '/' || url.pathname === '/index.html' || url.pathname === '/login';
+
+      if (!authed && isLoginPage) {
+        if (req.method === 'GET') {
+          const qkey = url.searchParams.get('key');
+          if (!qkey) return serveLogin(res, '');
+          if (lanFails(ip) >= LAN_MAX_FAILS) return serveLogin(res, 'Demasiados intentos. Espera unos minutos.');
+          if (!safeEqual(qkey, LAN_KEY)) { lanRegisterFail(ip); return serveLogin(res, 'Clave incorrecta'); }
+          return sendSession(res, newLanSession());
         }
-        return json(res, 401, { error: 'No autorizado' });
+        if (req.method === 'POST' && url.pathname === '/login') {
+          if (lanFails(ip) >= LAN_MAX_FAILS) return serveLogin(res, 'Demasiados intentos. Espera unos minutos.');
+          const form = await readForm(req);
+          if (!safeEqual(form.key, LAN_KEY)) { lanRegisterFail(ip); return serveLogin(res, 'Clave incorrecta'); }
+          LAN_FAILS.delete(ip);
+          return sendSession(res, newLanSession());
+        }
+      }
+      if (!authed) return json(res, 401, { error: 'No autorizado' });
+      if (url.pathname === '/login') {
+        res.writeHead(302, { Location: '/' });
+        return res.end();
       }
     }
     if (url.pathname.startsWith('/api/backup') && isLan) {
@@ -1014,7 +1161,7 @@ async function handle(req, res, isLan) {
         await sleep(1500);
         result = await startService(name);
       }
-      else result = { ok: false, error: 'Acci??n inv??lida' };
+      else result = { ok: false, error: 'Acción inválida' };
       return json(res, result.ok ? 200 : 500, { ...result, services: await serviceStatus() });
     }
     if (url.pathname === '/api/php' && req.method === 'POST') {

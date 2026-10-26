@@ -78,6 +78,7 @@ Panel de control privado para **Laragon** en Windows. Sustituye la interfaz de L
 | Clave | Por defecto | Descripción |
 |---|---|---|
 | `laragonRoot` | `C:/laragon` | Carpeta raíz de Laragon. |
+| `wwwRoot` | DocumentRoot de `usr\laragon.ini` o `<laragonRoot>/www` | Carpeta de proyectos. Úsala si tu `www` vive en otro disco, por ejemplo `D:/Laragon/www`. |
 | `mysqlPort` | `3308` | Puerto TCP de MySQL. |
 | `panelPort` | `9090` | Panel local (solo `127.0.0.1`). |
 | `lanPort` | `9091` | Panel para la red local. |
@@ -85,7 +86,7 @@ Panel de control privado para **Laragon** en Windows. Sustituye la interfaz de L
 | `wtPath` | vacío | Ruta a `wt.exe` de Windows Terminal. Si está vacío se autodetecta. |
 | `legacyDumps` | vacío | Carpeta antigua de dumps, opcional. |
 
-Variables equivalentes: `LARAGON_ROOT`, `MYSQL_PORT`, `PANEL_PORT`, `PANEL_LAN_PORT`, `VSCODE_PATH`, `WT_PATH`, `LEGACY_BACKUP`.
+Variables equivalentes: `LARAGON_ROOT`, `LARAGON_WWW`, `MYSQL_PORT`, `PANEL_PORT`, `PANEL_LAN_PORT`, `VSCODE_PATH`, `WT_PATH`, `LEGACY_BACKUP`.
 
 ## Estructura de Laragon que espera el panel
 
@@ -102,7 +103,7 @@ C:\laragon\
   bin\apache\...\conf\extra\httpd-vhosts.conf
 ```
 
-El panel elige automáticamente la carpeta más reciente de Apache y MySQL. Para PHP usa la versión activa de `usr\laragon.ini` o la que se seleccione en la vista PHP.
+El panel usa la versión de Apache y MySQL indicada en `usr\laragon.ini` y, si no existe, la carpeta más reciente. Para PHP usa la versión activa de `usr\laragon.ini` o la que se seleccione en la vista PHP.
 
 ### Proyectos y puertos
 
@@ -114,7 +115,7 @@ El panel lee `C:\laragon\puertos.csv` con este formato:
 "8002","mi-web","C:/laragon/www/mi-web"
 ```
 
-Si el archivo no existe, el panel recorre `www` y asigna puertos en memoria, pero **los vhosts no se crean solos**. Para publicar un proyecto:
+Si el archivo no existe, el panel toma los puertos reales de `conf/extra/httpd-vhosts.conf` (resolviendo `${LARAGON_WWW}` y los `Define` de `httpd.conf`) y asigna puertos en memoria solo a las carpetas de `www` que no tengan vhost. **Los vhosts no se crean solos**. Para publicar un proyecto:
 
 - Usa **Proyectos → Nuevo sitio → Enlazar carpeta existente**, que crea el vhost y el puerto; o
 - Copia tu `puertos.csv` y tu `httpd-vhosts.conf` ajustando `DocumentRoot` a la nueva ruta.
@@ -183,6 +184,8 @@ La app usa el Node incluido en Electron para lanzar `server.js`; no necesita un 
 
 - El panel local escucha solo en `127.0.0.1`.
 - El panel LAN escucha en `0.0.0.0:9091` y exige clave.
+- La clave del LAN se valida en el servidor y se canjea por una cookie de sesión aleatoria (`laragon_sess`, `HttpOnly`, 12 h). La clave nunca se guarda en la cookie.
+- Tras 5 intentos fallidos, la IP queda bloqueada 5 minutos.
 - Los respaldos solo se administran desde el equipo local.
 - No se versionan: `panel.config.json`, `lan-key.txt`, `backups.json`, `backups/`, logs, dumps ni bases.
 - No expongas el panel a Internet sin HTTPS y una autenticación adicional.

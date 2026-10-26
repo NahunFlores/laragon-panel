@@ -4,9 +4,10 @@
  * Configuración del panel.
  *
  * Prioridad:
- *   1. Variables de entorno (LARAGON_ROOT, MYSQL_PORT, PANEL_PORT, PANEL_LAN_PORT).
+ *   1. Variables de entorno (LARAGON_ROOT, LARAGON_WWW, MYSQL_PORT, PANEL_PORT, PANEL_LAN_PORT).
  *   2. panel.config.json (junto a este archivo).
- *   3. Valores por defecto.
+ *   3. usr\laragon.ini (DocumentRoot) para la carpeta de proyectos.
+ *   4. Valores por defecto.
  *
  * Copia panel.config.example.json a panel.config.json y ajusta tu entorno.
  */
@@ -32,8 +33,28 @@ function laragonRoot(value) {
   return resolved.replace(/\\/g, '/').replace(/\/+$/, '');
 }
 
+function normalize(value) {
+  const resolved = path.resolve(String(value));
+  return resolved.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+// DocumentRoot de usr\laragon.ini: permite que los proyectos vivan fuera de <laragon>\www.
+function iniDocumentRoot(root) {
+  try {
+    const ini = fs.readFileSync(path.join(root, 'usr', 'laragon.ini'), 'utf8');
+    const m = ini.match(/^\s*DocumentRoot\s*=\s*(.+)$/im);
+    return m ? m[1].trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+const root = laragonRoot(process.env.LARAGON_ROOT || file.laragonRoot);
+const www = process.env.LARAGON_WWW || file.wwwRoot || iniDocumentRoot(root) || path.join(root, 'www');
+
 module.exports = {
-  laragonRoot: laragonRoot(process.env.LARAGON_ROOT || file.laragonRoot),
+  laragonRoot: root,
+  wwwRoot: normalize(www),
   mysqlPort: number(process.env.MYSQL_PORT || file.mysqlPort, 3308),
   panelPort: number(process.env.PANEL_PORT || file.panelPort, 9090),
   lanPort: number(process.env.PANEL_LAN_PORT || file.lanPort, 9091),

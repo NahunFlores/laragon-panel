@@ -1,5 +1,6 @@
 {
   "laragonRoot": "C:/laragon",
+  "wwwRoot": "C:/laragon/www",
   "mysqlPort": 3308,
   "panelPort": 9090,
   "lanPort": 9091,
