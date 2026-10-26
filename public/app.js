@@ -627,14 +627,136 @@ async function openTool(path, tool) {
   }
 }
 
-async function showProjectLog(port, name) {
+const LOG_RANGES = [
+  ['15m', 'Últimos 15 min', 15 * 60 * 1000],
+  ['1h', 'Última hora', 60 * 60 * 1000],
+  ['24h', 'Últimas 24 h', 24 * 60 * 60 * 1000],
+  ['7d', 'Últimos 7 días', 7 * 24 * 60 * 60 * 1000],
+  ['all', 'Todo', 0],
+];
+async function openDir(kind) {
   try {
-    const r = await api(`/api/project-log?port=${port}`);
-    showModal(`Logs · ${name}`, `<pre class="log" style="max-height:55vh;margin:0">${esc(r.text || '(sin errores registrados)')}</pre>`, [
-      { label: 'Cerrar', onClick: closeModal },
-    ]);
+    const r = await api('/api/open-dir', { method: 'POST', body: JSON.stringify({ kind }) });
+    if (!r.ok) throw new Error(r.error || 'No se pudo abrir');
   } catch (e) {
-    toast('No se pudo leer el log', e.message, 'err');
+    toast('No se pudo abrir', e.message, 'err');
+  }
+}
+
+async function openPortsModal() {
+  let list = projects;
+  if (!list.length) {
+    try { const r = await api('/api/projects'); list = r.projects || []; } catch { list = []; }
+  }
+  const rows = list.slice().sort((a, b) => a.port - b.port).map(p => `<tr>
+      <td class="mono">:${p.port}</td>
+      <td>${esc(p.name)}</td>
+      <td class="mono small">${esc(p.root || '')}</td>
+      <td>${esc(p.type || '')}</td>
+    </tr>`).join('');
+  const body = `<div class="muted" style="margin-bottom:12px">Mapeo real de puertos: se toma de <code>httpd-vhosts.conf</code> y se completa con las carpetas de <code>www</code> que no tienen vhost.</div>
+    <div class="ports-table">
+      <table>
+        <thead><tr><th>Puerto</th><th>Proyecto</th><th>Carpeta</th><th>Tipo</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="4">Sin proyectos</td></tr>'}</tbody>
+      </table>
+    </div>`;
+  showModal('Puertos y proyectos', body, [
+    { label: 'puertos.csv', class: 'ghost', onClick: () => openDir('ports') },
+    { label: 'httpd-vhosts.conf', class: 'ghost', onClick: () => openDir('vhosts') },
+    { label: 'Cerrar', onClick: closeModal },
+  ], true);
+}
+
+let logCtx = { port: 0, name: '', file: '', range: '24h' };
+
+function fmtBytes(n) {
+  if (!n) return '0 B';
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1048576).toFixed(2)} MB`;
+}
+
+async function showProjectLog(port, name) {
+  logCtx = { port, name, file: '', range: '24h' };
+  showModal(`Logs · ${name}`, '<div class="muted">Buscando archivos de log…</div>', [{ label: 'Cerrar', onClick: closeModal }], true);
+  await renderLogPanel();
+}
+
+async function renderLogPanel() {
+  const { port, name } = logCtx;
+  let files = [];
+  try {
+    const r = await api(`/api/project-logs?port=${port}`);
+    files = r.files || [];
+  } catch (e) {
+    toast('No se pudieron leer los logs', e.message, 'err');
+  }
+  if (!files.length) {
+    $('#modalBody').innerHTML = `<div class="muted">Este proyecto no tiene archivos de log todavía.<br>
+      Se buscan en <code>storage/logs/*.log</code>, en los <code>ErrorLog</code>/<code>CustomLog</code> del vhost y en el log de Node.</div>`;
+    return;
+  }
+  if (!logCtx.file || !files.some(f => f.id === logCtx.file)) logCtx.file = files[0].id;
+  const options = files.map(f => `<option value="${esc(f.id)}" ${f.id === logCtx.file ? 'selected' : ''}>${esc(f.label)} · ${fmtBytes(f.size)}</option>`).join('');
+  const ranges = LOG_RANGES.map(([value, label]) => `<option value="${value}" ${value === logCtx.range ? 'selected' : ''}>${label}</option>`).join('');
+  $('#modalBody').innerHTML = `
+    <div class="log-tools">
+      <select id="logFile" class="search">${options}</select>
+      <select id="logRange" class="search">${ranges}</select>
+      <button class="btn ghost" id="logRefresh">Actualizar</button>
+      <button class="btn ghost danger" id="logClear">Vaciar</button>
+    </div>
+    <div class="log-meta" id="logMeta"></div>
+    <pre class="log" id="logPre">cargando…</pre>`;
+  $('#logFile').onchange = e => { logCtx.file = e.target.value; loadLogText(); };
+  $('#logRange').onchange = e => { logCtx.range = e.target.value; loadLogText(); };
+  $('#logRefresh').onclick = () => renderLogPanel();
+  $('#logClear').onclick = () => clearProjectLog();
+  loadLogText();
+}
+
+async function loadLogText() {
+  const pre = $('#logPre');
+  if (!pre) return;
+  const meta = $('#logMeta');
+  const range = LOG_RANGES.find(r => r[0] === logCtx.range) || LOG_RANGES[4];
+  const since = range[2] ? Date.now() - range[2] : 0;
+  pre.textContent = 'cargando…';
+  try {
+    let r = await api(`/api/project-log?port=${logCtx.port}&file=${encodeURIComponent(logCtx.file)}&since=${since}&lines=800`);
+    let fallback = false;
+    if (since && !r.lines) {
+      r = await api(`/api/project-log?port=${logCtx.port}&file=${encodeURIComponent(logCtx.file)}&since=0&lines=800`);
+      fallback = true;
+    }
+    const lines = r.text ? r.text.split('\n').filter(l => l.length) : [];
+    pre.textContent = lines.length ? r.text : '(el archivo está vacío)';
+    if (meta) {
+      const extra = [];
+      if (r.entries) extra.push(`${r.entries} eventos`);
+      extra.push(`${lines.length} líneas`);
+      extra.push(fallback ? 'sin actividad en el rango, mostrando lo último' : range[1]);
+      if (r.cut) extra.push('recortado al final');
+      if (r.truncated) extra.push('leyendo el final del archivo');
+      meta.innerHTML = `<span>${esc(r.label || 'log')}</span><span class="mono">${esc(r.file || '')}</span>
+        <span>${fmtBytes(r.size)} · ${esc(extra.join(' · '))}</span>`;
+    }
+  } catch (e) {
+    pre.textContent = `No se pudo leer el log: ${e.message}`;
+  }
+}
+
+async function clearProjectLog() {
+  const file = logCtx.file;
+  if (!file) return;
+  if (!confirm('¿Vaciar este log? Se guarda una copia del contenido anterior en el mismo archivo con extensión .old.')) return;
+  try {
+    const r = await api('/api/project-log/clear', { method: 'POST', body: JSON.stringify({ port: logCtx.port, file }) });
+    toast('Log vaciado', `${fmtBytes(r.freed)} liberados`, 'ok');
+    await renderLogPanel();
+  } catch (e) {
+    toast('No se pudo vaciar el log', e.message, 'err');
   }
 }
 
@@ -646,9 +768,11 @@ function closeModal() {
   $('#modalFoot').innerHTML = '';
 }
 
-function showModal(title, body, actions = []) {
+function showModal(title, body, actions = [], wide = false) {
   $('#modalTitle').textContent = title;
   $('#modalBody').innerHTML = body;
+  const box = $('#modal').querySelector('.modal');
+  if (box) box.classList.toggle('wide', !!wide);
   const foot = $('#modalFoot');
   foot.innerHTML = '';
   for (const a of actions) {
@@ -1520,8 +1644,8 @@ function bind() {
 
   $('#openWww').addEventListener('click', () => openPort(80));
   $('#openPhpInfo').addEventListener('click', () => setView('php'));
-  $('#openDumps').addEventListener('click', () => openPath('C:\\laragon\\backups\\db'));
-  $('#openPorts').addEventListener('click', () => openPath('C:\\laragon\\puertos.txt'));
+  $('#openDumps').addEventListener('click', () => openDir('dumps'));
+  $('#openPorts').addEventListener('click', () => openPortsModal());
 }
 
 function clock() {

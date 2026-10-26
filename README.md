@@ -10,6 +10,7 @@ Panel de control privado para **Laragon** en Windows. Sustituye la interfaz de L
 - **Servicios**: iniciar, detener y reiniciar Apache y MySQL por separado.
 - **Proyectos**: puerto, estado HTTP, abrir sitio, carpeta, VS Code, terminal y logs.
 - **Vista previa**: cada proyecto activo (punto verde) muestra una miniatura real de su portada, capturada con Edge/Chrome headless y cacheada 15 minutos. Los sitios apagados no se capturan.
+- **Logs por proyecto**: detecta `storage/logs/*.log`, los `ErrorLog`/`CustomLog` del vhost y el log de Node. Se pueden filtrar por tiempo (15 min, 1 h, 24 h, 7 días, todo) y vaciar (antes guarda una copia `.old`).
 - **Nuevo sitio**: PHP, HTML, Laravel, Node.js o enlazar una carpeta existente.
 - **PHP**: detecta versiones instaladas, cambia la activa y activa/desactiva extensiones.
 - **Bases de datos**: listar, crear, borrar, dump, importar y backup total.

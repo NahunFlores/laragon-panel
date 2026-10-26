@@ -855,6 +855,134 @@ function sendPreview(res, file) {
   });
 }
 
+function apacheVhostLogs(port) {
+  if (!apache) return [];
+  let text = '';
+  try { text = fs.readFileSync(path.join(apache.base, 'conf', 'extra', 'httpd-vhosts.conf'), 'utf8'); } catch { return []; }
+  const out = [];
+  const re = /<VirtualHost\s*\*:(\d+)>([\s\S]*?)<\/VirtualHost>/gi;
+  let m;
+  while ((m = re.exec(text))) {
+    if (Number(m[1]) !== Number(port)) continue;
+    for (const kind of ['ErrorLog', 'CustomLog']) {
+      const lm = m[2].match(new RegExp(`^\\s*${kind}\\s+"?([^"\\r\\n]+)"?`, 'im'));
+      if (!lm) continue;
+      const raw = lm[1].trim().replace(/\\/g, '/');
+      if (!raw || /^(pipe|syslog)/i.test(raw)) continue;
+      const full = path.isAbsolute(raw) ? raw : path.join(apache.base, raw);
+      out.push({ kind: kind === 'ErrorLog' ? 'error' : 'access', file: full });
+    }
+  }
+  return out;
+}
+
+function projectLogFiles(project) {
+  const files = [];
+  const seen = new Set();
+  const add = (id, label, file, kind) => {
+    if (!file) return;
+    const key = path.resolve(file).toLowerCase();
+    if (seen.has(key)) return;
+    let st = null;
+    try { st = fs.statSync(file); } catch { return; }
+    if (!st.isFile()) return;
+    seen.add(key);
+    files.push({ id, label, kind, path: file.replace(/\\/g, '/'), size: st.size, mtime: st.mtimeMs });
+  };
+
+  let root = (project.root || '').replace(/\\/g, '/');
+  if (/\/public$/i.test(root)) root = path.dirname(root);
+  const logDir = path.join(root, 'storage', 'logs');
+  try {
+    fs.readdirSync(logDir)
+      .filter(f => f.toLowerCase().endsWith('.log'))
+      .map(f => ({ f, t: fs.statSync(path.join(logDir, f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t)
+      .forEach(({ f }) => add(`app:${f}`, `App · ${f}`, path.join(logDir, f), 'app'));
+  } catch {}
+
+  for (const l of apacheVhostLogs(project.port)) {
+    add(`apache:${l.kind}`, `Apache · ${l.kind}`, l.file, 'apache');
+  }
+
+  const safe = (project.name || '').replace(/[^A-Za-z0-9._-]/g, '_');
+  add('node', 'Node · panel', path.join(LARAGON, 'logs', `node-${safe}.log`), 'node');
+
+  return files;
+}
+
+function lineTime(line) {
+  let m;
+  if ((m = line.match(/^\[(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/))) {
+    return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
+  }
+  if ((m = line.match(/^\[(\d{2})-([A-Za-z]{3})-(\d{4}) (\d{2}):(\d{2}):(\d{2})/))) {
+    const t = Date.parse(`${m[1]} ${m[2]} ${m[3]} ${m[4]}:${m[5]}:${m[6]} UTC`);
+    if (!Number.isNaN(t)) return t;
+  }
+  if ((m = line.match(/^\[\w{3} ([A-Za-z]{3}) +(\d{1,2}) (\d{2}):(\d{2}):(\d{2})(?:\.\d+)? (\d{4})/))) {
+    const t = Date.parse(`${m[1]} ${m[2]} ${m[6]} ${m[3]}:${m[4]}:${m[5]}`);
+    if (!Number.isNaN(t)) return t;
+  }
+  if ((m = line.match(/^\[?(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/))) {
+    return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
+  }
+  return null;
+}
+
+function readLogFiltered(file, sinceMs, untilMs, maxLines) {
+  const st = fs.statSync(file);
+  const maxBytes = 4 * 1024 * 1024;
+  const start = Math.max(0, st.size - maxBytes);
+  const buf = Buffer.alloc(st.size - start);
+  const fd = fs.openSync(file, 'r');
+  try { fs.readSync(fd, buf, 0, buf.length, start); } finally { fs.closeSync(fd); }
+  const lines = buf.toString('utf8').split(/\r?\n/);
+  // Agrupar en entradas: la linea con fecha abre una entrada y las continuaciones
+  // (trazas de Laravel, etc.) se van con ella para no cortar el bloque a medias.
+  const blocks = [];
+  let current = null;
+  let lastTime = null;
+  for (const line of lines) {
+    const t = lineTime(line);
+    if (t !== null) {
+      if (current) blocks.push(current);
+      current = { t, lines: [line] };
+      lastTime = t;
+      continue;
+    }
+    if (!current) current = { t: lastTime, lines: [line] };
+    else current.lines.push(line);
+  }
+  if (current) blocks.push(current);
+  const kept = blocks.filter(b => {
+    if (b.t === null) return !sinceMs && !untilMs;
+    if (sinceMs && b.t < sinceMs) return false;
+    if (untilMs && b.t > untilMs) return false;
+    return true;
+  });
+  const MAX_ENTRY_LINES = 60;
+  const picked = [];
+  let count = 0;
+  for (let i = kept.length - 1; i >= 0 && count < maxLines; i--) {
+    const b = kept[i];
+    const body = b.lines.length > MAX_ENTRY_LINES
+      ? [...b.lines.slice(0, MAX_ENTRY_LINES), `… (${b.lines.length - MAX_ENTRY_LINES} líneas omitidas)`]
+      : b.lines;
+    if (picked.length && count + body.length > maxLines) break;
+    picked.unshift(body.join('\n'));
+    count += body.length;
+  }
+  const text = picked.join('\n');
+  return {
+    text,
+    truncated: start > 0,
+    lines: count,
+    entries: kept.length,
+    cut: picked.length < kept.length,
+  };
+}
+
 let statusCache = { at: 0, data: {} };
 async function projectStatuses() {
   if (Date.now() - statusCache.at < 15000) return statusCache.data;
@@ -1366,14 +1494,78 @@ async function handle(req, res, isLan) {
       const result = await nodeAction(String(body.name || ''), String(body.action || ''));
       return json(res, result.ok ? 200 : 400, result);
     }
+    if (url.pathname === '/api/open-dir' && req.method === 'POST') {
+      const body = await readBody(req);
+      const kind = String(body.kind || '');
+      const map = {
+        dumps: path.join(LARAGON, 'backups', 'db'),
+        logs: path.join(LARAGON, 'logs'),
+        www: WWW,
+        ports: path.join(LARAGON, 'puertos.csv'),
+        vhosts: apache ? path.join(apache.base, 'conf', 'extra', 'httpd-vhosts.conf') : '',
+      };
+      const target = map[kind];
+      if (!target) return json(res, 400, { error: 'Tipo inválido' });
+      if (!fs.existsSync(target) && kind === 'dumps') {
+        try { fs.mkdirSync(target, { recursive: true }); } catch {}
+      }
+      if (!fs.existsSync(target)) return json(res, 404, { error: 'No existe todavía', path: target.replace(/\\/g, '/') });
+      let isDir = false;
+      try { isDir = fs.statSync(target).isDirectory(); } catch {}
+      if (isDir) spawn('explorer.exe', [target], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      else spawn('cmd.exe', ['/c', 'start', '', target], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      return json(res, 200, { ok: true, path: target.replace(/\\/g, '/'), dir: isDir });
+    }
     if (url.pathname === '/api/projects/status') return json(res, 200, { statuses: await projectStatuses() });
+    if (url.pathname === '/api/project-logs') {
+      const port = Number(url.searchParams.get('port'));
+      const project = readProjects().find(p => p.port === port);
+      if (!project) return json(res, 404, { error: 'Proyecto no encontrado' });
+      return json(res, 200, { project: project.name, files: projectLogFiles(project) });
+    }
     if (url.pathname === '/api/project-log') {
       const port = Number(url.searchParams.get('port'));
       const project = readProjects().find(p => p.port === port);
       if (!project) return json(res, 404, { error: 'Proyecto no encontrado' });
-      const safe = project.name.replace(/[^A-Za-z0-9._-]/g, '_');
-      const file = path.join(apache.logs, `${safe}-error.log`);
-      return json(res, 200, { file: file.replace(/\\/g, '/'), text: tailFile(file, 120) });
+      const files = projectLogFiles(project);
+      if (!files.length) return json(res, 200, { file: null, text: '', lines: 0, files: [] });
+      const id = url.searchParams.get('file') || files[0].id;
+      const chosen = files.find(f => f.id === id);
+      if (!chosen) return json(res, 404, { error: 'Archivo de log no encontrado' });
+      const since = Number(url.searchParams.get('since')) || 0;
+      const until = Number(url.searchParams.get('until')) || 0;
+      const maxLines = Math.min(Number(url.searchParams.get('lines')) || 800, 5000);
+      const r = readLogFiltered(chosen.path, since, until, maxLines);
+      return json(res, 200, {
+        file: chosen.path,
+        label: chosen.label,
+        size: chosen.size,
+        mtime: chosen.mtime,
+        files,
+        text: r.text,
+        lines: r.lines,
+        entries: r.entries,
+        truncated: r.truncated,
+        cut: r.cut,
+      });
+    }
+    if (url.pathname === '/api/project-log/clear' && req.method === 'POST') {
+      const body = await readBody(req);
+      const port = Number(body.port);
+      const project = readProjects().find(p => p.port === port);
+      if (!project) return json(res, 404, { error: 'Proyecto no encontrado' });
+      const chosen = projectLogFiles(project).find(f => f.id === String(body.file || ''));
+      if (!chosen) return json(res, 404, { error: 'Archivo de log no encontrado' });
+      try {
+        const freed = chosen.size;
+        if (freed > 0) {
+          fs.copyFileSync(chosen.path, `${chosen.path}.old`);
+          fs.truncateSync(chosen.path, 0);
+        }
+        return json(res, 200, { ok: true, file: chosen.path, freed });
+      } catch (e) {
+        return json(res, 500, { ok: false, error: e.message });
+      }
     }
     if (url.pathname === '/api/extensions') {
       if (req.method === 'GET') return json(res, 200, { extensions: getExtensions() });
