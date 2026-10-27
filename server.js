@@ -217,6 +217,18 @@ async function mysqldRunning() {
   return /mysqld\.exe/i.test(r.stdout || '');
 }
 
+const serviceLocks = new Map();
+
+function withServiceLock(name, fn) {
+  const key = String(name || '');
+  const prev = serviceLocks.get(key) || Promise.resolve();
+  const run = prev.catch(() => {}).then(fn);
+  serviceLocks.set(key, run);
+  return run.finally(() => {
+    if (serviceLocks.get(key) === run) serviceLocks.delete(key);
+  });
+}
+
 async function startService(name) {
   if (name === 'apache') {
     if (!apache) return { ok: false, error: 'Apache no encontrado' };
@@ -230,8 +242,8 @@ async function startService(name) {
     if (await portOpen(MYSQL_PORT)) return { ok: true, already: true };
 
     if (await mysqldRunning()) {
-      // Puede ser un arranque en curso: darle unos segundos antes de forzar.
-      for (let i = 0; i < 6; i++) {
+      // Puede ser un arranque en curso: darle hasta 20 s antes de forzar.
+      for (let i = 0; i < 40; i++) {
         await sleep(500);
         if (await portOpen(MYSQL_PORT, 300)) return { ok: true, already: true };
       }
@@ -243,7 +255,14 @@ async function startService(name) {
     launch();
     let up = await waitPort(MYSQL_PORT, 30000);
     if (!up) {
-      await sleep(2000);
+      // Recuperación lenta de InnoDB: esperar antes de lanzar un duplicado.
+      for (let i = 0; i < 20; i++) {
+        await sleep(500);
+        if (await portOpen(MYSQL_PORT, 300)) { up = true; break; }
+      }
+    }
+    if (!up) {
+      await sleep(1000);
       launch();
       up = await waitPort(MYSQL_PORT, 30000);
     }
@@ -1441,15 +1460,16 @@ async function handle(req, res, isLan) {
     if (url.pathname === '/api/service' && req.method === 'POST') {
       const body = await readBody(req);
       const name = body.name, action = body.action;
-      let result;
-      if (action === 'start') result = await startService(name);
-      else if (action === 'stop') result = await stopService(name);
-      else if (action === 'restart') {
-        await stopService(name);
-        await sleep(1500);
-        result = await startService(name);
-      }
-      else result = { ok: false, error: 'Acción inválida' };
+      const result = await withServiceLock(name, async () => {
+        if (action === 'start') return startService(name);
+        if (action === 'stop') return stopService(name);
+        if (action === 'restart') {
+          await stopService(name);
+          await sleep(1500);
+          return startService(name);
+        }
+        return { ok: false, error: 'Acción inválida' };
+      });
       return json(res, result.ok ? 200 : 500, { ...result, services: await serviceStatus() });
     }
     if (url.pathname === '/api/php' && req.method === 'POST') {
