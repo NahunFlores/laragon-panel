@@ -415,7 +415,7 @@ function normalizeJob(input, existing) {
   }
 
   const s = input.schedule || {};
-  const type = ['manual', 'daily', 'weekly', 'hourly'].includes(s.type) ? s.type : 'daily';
+  const type = ['manual', 'daily', 'weekly', 'hourly', 'window'].includes(s.type) ? s.type : 'daily';
   let time = /^\d{2}:\d{2}$/.test(String(s.time || '')) ? String(s.time) : '02:00';
   {
     const [hh, mm] = time.split(':').map(Number);
@@ -424,8 +424,13 @@ function normalizeJob(input, existing) {
   const days = Array.isArray(s.days)
     ? [...new Set(s.days.map(Number).filter(d => d >= 0 && d <= 6))].sort()
     : [1, 2, 3, 4, 5];
-  if (type === 'weekly' && !days.length) days.push(1, 2, 3, 4, 5);
+  if ((type === 'weekly' || type === 'window') && !days.length) days.push(1, 2, 3, 4, 5);
   const every = Math.min(168, Math.max(1, Number(s.every) || 24));
+  const startHour = Math.min(23, Math.max(0, Number(s.startHour) || 4));
+  let endHour = Math.min(24, Math.max(1, Number(s.endHour) || 18));
+  if (endHour <= startHour) endHour = Math.min(24, startHour + 1);
+  const maxPerMonth = Math.min(1000, Math.max(0, Number(input.maxPerMonth) || 0));
+  const retentionDays = Math.min(3650, Math.max(0, Number(input.retentionDays) || 0));
 
   const dbIn = input.databases || {};
   const prjIn = input.projects || {};
@@ -448,12 +453,14 @@ function normalizeJob(input, existing) {
     name,
     folder: existing?.folder || `${slug(name)}-${id.slice(2, 8)}`,
     destination,
-    schedule: { type, time, days, every },
+    schedule: { type, time, days, every, startHour, endHour },
     databases: { mode: dbMode, list: dbList },
     projects: { mode: prjMode, list: prjList },
     excludeDeps: input.excludeDeps !== false,
     compress: input.compress !== false,
     retention: Math.min(60, Math.max(1, Number(input.retention) || 5)),
+    retentionDays,
+    maxPerMonth,
     enabled: input.enabled !== false,
     createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -653,6 +660,10 @@ async function runJob(jobId, opts = {}) {
   const cfg = readConfig();
   const job = cfg.jobs.find(j => j.id === jobId);
   if (!job) return { ok: false, error: 'Tarea no encontrada' };
+  if (opts.scheduled && !isDue(job, new Date(), cfg)) {
+    console.log(`[backup] "${job.name}" fuera de programación; se omite.`);
+    return { ok: true, skipped: true, message: 'Fuera de programación' };
+  }
   if (!acquireLock(job.id)) {
     return { ok: true, skipped: true, error: 'Ya hay un respaldo en ejecución' };
   }
@@ -950,9 +961,21 @@ async function runJob(jobId, opts = {}) {
     // Retención: solo dentro de la carpeta de esta tarea y solo si la copia salió bien.
     if (ok) {
       const keep = Math.max(1, Number(job.retention) || 5);
+      const maxAge = Number(job.retentionDays) > 0
+        ? Date.now() - Number(job.retentionDays) * 86400 * 1000
+        : 0;
       const all = snapshots(job);
-      const remove = all.slice(0, Math.max(0, all.length - keep));
-      for (const old of remove) {
+      const remove = new Set();
+      if (maxAge) {
+        for (const name of all) {
+          try {
+            if (fs.statSync(path.join(root, name)).mtimeMs < maxAge) remove.add(name);
+          } catch {}
+        }
+      }
+      const remaining = all.filter(name => !remove.has(name));
+      remaining.slice(0, Math.max(0, remaining.length - keep)).forEach(name => remove.add(name));
+      for (const old of all.filter(name => remove.has(name))) {
         log(`Retención: eliminando copia antigua ${old}`);
         try { fs.rmSync(path.join(root, old), { recursive: true, force: true }); } catch (e) { log(`  ERROR al borrar: ${e.message}`); }
       }
@@ -1076,6 +1099,8 @@ foreach ($t in @($data.tasks)) {
     $trigger = New-ScheduledTaskTrigger -Daily -At $t.time
   } elseif ($t.type -eq 'weekly') {
     $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $t.days -At $t.time
+  } elseif ($t.type -eq 'window') {
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Hours $t.every) -RepetitionDuration (New-TimeSpan -Days 3650)
   } else {
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Hours $t.every) -RepetitionDuration (New-TimeSpan -Days 3650)
   }
@@ -1125,14 +1150,36 @@ async function applyTasks() {
 
 /* ---------------- Programación interna (respaldo si el panel está abierto) ---------------- */
 
-function isDue(job, now = new Date()) {
+function monthlyRuns(cfg, jobId, now = new Date()) {
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  return (cfg.history || []).filter(h => {
+    if (h.jobId !== jobId || !h.ok || h.skipped) return false;
+    const d = new Date(h.at);
+    return d.getFullYear() === year && d.getMonth() === month;
+  }).length;
+}
+
+function isDue(job, now = new Date(), cfg = null) {
   const s = job.schedule || {};
   if (!job.enabled || s.type === 'manual') return false;
+  if (cfg && job.maxPerMonth > 0 && monthlyRuns(cfg, job.id, now) >= job.maxPerMonth) return false;
   const last = job.last?.at ? new Date(job.last.at).getTime() : 0;
+
   if (s.type === 'hourly') {
     const every = Math.max(1, Number(s.every) || 24);
-    return now.getTime() - last >= every * 3600 * 1000;
+    return now.getTime() - last >= every * 3600 * 1000 - 5 * 60 * 1000;
   }
+  if (s.type === 'window') {
+    if (!(s.days || []).includes(now.getDay())) return false;
+    const hour = now.getHours();
+    const start = Number(s.startHour) || 0;
+    const end = Number(s.endHour) || 24;
+    if (hour < start || hour >= end) return false;
+    const every = Math.max(1, Number(s.every) || 2) * 3600 * 1000;
+    return now.getTime() - last >= every - 5 * 60 * 1000;
+  }
+
   const [h, m] = String(s.time || '02:00').split(':').map(Number);
   const target = new Date(now);
   target.setHours(h || 0, m || 0, 0, 0);
@@ -1164,7 +1211,7 @@ async function maybeRunDue(log = () => {}) {
   const cfg = readConfig();
   const now = new Date();
   for (const job of cfg.jobs) {
-    if (!isDue(job, now)) continue;
+    if (!isDue(job, now, cfg)) continue;
     if (job.lastSkipAt && Date.now() - Date.parse(job.lastSkipAt) < 30 * 60 * 1000) continue;
     const driveRoot = path.parse(job.destination).root;
     if (!fs.existsSync(driveRoot)) {
@@ -1218,7 +1265,7 @@ async function jobsPayload(catalog = {}) {
   const cfg = readConfig();
   const [drives, tasks] = await Promise.all([listDrives(), listTasks()]);
   return {
-    jobs: cfg.jobs,
+    jobs: cfg.jobs.map(j => ({ ...j, monthlyRuns: monthlyRuns(cfg, j.id) })),
     history: cfg.history.slice(0, 60),
     drives,
     tasks,

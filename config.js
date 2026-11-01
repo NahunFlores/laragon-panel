@@ -60,6 +60,9 @@ module.exports = {
   lanPort: number(process.env.PANEL_LAN_PORT || file.lanPort, 9091),
   codePath: String(process.env.VSCODE_PATH || file.codePath || '').trim(),
   wtPath: String(process.env.WT_PATH || file.wtPath || '').trim(),
+  nssmPath: String(process.env.NSSM_PATH || file.nssmPath || 'C:/laragon/nssm-2.24/win64/nssm.exe').trim(),
+  redisPath: String(process.env.REDIS_PATH || file.redisPath || '').trim(),
+  phpPath: String(process.env.PHP_PATH || file.phpPath || '').trim(),
   legacyDumps: String(process.env.LEGACY_BACKUP || file.legacyDumps || '').trim(),
   configFile: FILE,
 };

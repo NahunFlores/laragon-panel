@@ -4,17 +4,20 @@ Panel de control privado para **Laragon** en Windows. Sustituye la interfaz de L
 
 > Este repositorio contiene **solo el panel**. No incluye Laragon, Apache, MySQL, PHP, proyectos, bases de datos ni dumps.
 
+> Guía de instalación y verificación en Excel: `INSTALACION_LARAGON_PANEL.xlsx`.
+
 ## Funciones
 
 - **Dashboard** con CPU, RAM, disco, GPU, uptime y consumo por servicio.
 - **Servicios**: iniciar, detener y reiniciar Apache y MySQL por separado.
+- **Servicios de Windows**: Apache, MySQL, Redis y colas Laravel como servicios con NSSM; estado real, auto-inicio, logs, agregar/quitar y adoptar servicios existentes.
 - **Proyectos**: puerto, estado HTTP, abrir sitio, carpeta, VS Code, terminal y logs.
 - **Vista previa**: cada proyecto activo (punto verde) muestra una miniatura real de su portada, capturada con Edge/Chrome headless y cacheada 15 minutos. Los sitios apagados no se capturan.
 - **Logs por proyecto**: detecta `storage/logs/*.log`, los `ErrorLog`/`CustomLog` del vhost y el log de Node. Se pueden filtrar por tiempo (15 min, 1 h, 24 h, 7 días, todo) y vaciar (antes guarda una copia `.old`).
 - **Nuevo sitio**: PHP, HTML, Laravel, Node.js o enlazar una carpeta existente.
 - **PHP**: detecta versiones instaladas, cambia la activa y activa/desactiva extensiones.
 - **Bases de datos**: listar, crear, borrar, dump, importar y backup total.
-- **Respaldos**: tareas manuales o programadas, a otro disco, con **un ZIP por proyecto** (código + su base) y retención.
+- **Respaldos**: tareas manuales o programadas, a otro disco, con **un ZIP por proyecto** (código + su base), ventana de días/horas, límite mensual y retención por copias o por días.
 - **Programador de Windows**: las tareas corren aunque el panel esté cerrado.
 - **App Electron**: bandeja, notificaciones, inicio con Windows e instancia única.
 - **LAN**: panel por IP con clave y proyectos por `IP:PUERTO`.
@@ -24,6 +27,7 @@ Panel de control privado para **Laragon** en Windows. Sustituye la interfaz de L
 
 - Windows 10/11 x64.
 - Laragon con Apache 2.4, MySQL 8.x y PHP 8.x **x64 ZTS**.
+- **NSSM 2.24** para la vista de servicios Windows. Ruta recomendada: `C:\laragon\nssm-2.24\win64\nssm.exe`.
 - Node.js 18 o superior (solo para el panel web y para desarrollar; la app Electron ya incluye Node).
 - Visual C++ Redistributable 2015–2022 x64 (lo necesitan Apache/PHP/MySQL).
 - Opcional: Git, ODBC Driver 17 para SQL Server, VS Code y Windows Terminal.
@@ -75,9 +79,50 @@ El agente ejecuta el instalador, verifica que PHP quede parcheado y comprueba la
 | `lanPort` | `9091` | Panel para la red local. |
 | `codePath` | vacío | Ruta a `code.cmd` de VS Code. Si está vacío se autodetecta. |
 | `wtPath` | vacío | Ruta a `wt.exe` de Windows Terminal. Si está vacío se autodetecta. |
+| `nssmPath` | `C:/laragon/nssm-2.24/win64/nssm.exe` | Ejecutable de NSSM para los servicios Windows. |
+| `redisPath` | vacío | `redis-server.exe`; si está vacío se busca en `bin\redis`. |
+| `phpPath` | vacío | `php.exe` para colas Laravel; si está vacío usa el PHP activo de `usr\laragon.ini`. |
 | `legacyDumps` | vacío | Carpeta antigua de dumps, opcional. |
 
-Variables equivalentes: `LARAGON_ROOT`, `LARAGON_WWW`, `MYSQL_PORT`, `PANEL_PORT`, `PANEL_LAN_PORT`, `VSCODE_PATH`, `WT_PATH`, `LEGACY_BACKUP`.
+Variables equivalentes: `LARAGON_ROOT`, `LARAGON_WWW`, `MYSQL_PORT`, `PANEL_PORT`, `PANEL_LAN_PORT`, `VSCODE_PATH`, `WT_PATH`, `NSSM_PATH`, `REDIS_PATH`, `PHP_PATH`, `LEGACY_BACKUP`.
+
+## Servicios de Windows (NSSM)
+
+La vista **Windows** permite convertir procesos en servicios reales de Windows:
+
+- Apache, MySQL y Redis con auto-inicio y reinicio.
+- Colas Laravel: detecta proyectos con `artisan` y `QUEUE_CONNECTION` distinto de `sync`.
+- Servicios personalizados: executable, argumentos, carpeta y logs.
+- Buscar servicios existentes y **adoptarlos** para controlarlos desde el panel.
+- Ver estado real, iniciar, detener, reiniciar, cambiar auto-inicio y quitar.
+- Logs de salida y error por servicio.
+
+### Instalar NSSM
+
+```powershell
+$zip = "$env:TEMP\nssm-2.24.zip"
+Invoke-WebRequest https://nssm.cc/release/nssm-2.24.zip -OutFile $zip
+Expand-Archive $zip "$env:TEMP\nssm" -Force
+New-Item -ItemType Directory 'C:\laragon\nssm-2.24\win64' -Force | Out-Null
+Copy-Item "$env:TEMP\nssm\nssm-2.24\win64\nssm.exe" 'C:\laragon\nssm-2.24\win64\nssm.exe'
+```
+
+Ajusta `nssmPath` si lo instalas en otra ruta. NSSM no está firmado por un fabricante
+reconocido; descárgalo solo desde `nssm.cc`.
+
+> Consultar el estado no requiere administrador. Al instalar, iniciar, detener o quitar,
+> el panel pide **UAC**. Acepta el aviso para completar la operación.
+
+### Colas Laravel
+
+Para cada proyecto con `artisan` y una conexión de cola distinta de `sync`, el panel propone
+un servicio `LaragonQueue_<proyecto>` que ejecuta:
+
+```text
+php artisan queue:work <conexión> --tries=3 --sleep=3 --timeout=300 --queue=default
+```
+
+El PHP se toma de `phpPath` o del `[php] Version` activo en `usr\laragon.ini`.
 
 ## Estructura de Laragon que espera el panel
 
@@ -141,11 +186,22 @@ La clave del panel se genera en `lan-key.txt` y **no se sube al repositorio**.
 
 En **Respaldos → Nueva tarea**:
 
-- Destino: otro disco o USB.
+- Destino: otro disco, USB, Google Drive/OneDrive (carpeta sincronizada) o carpeta local.
 - Origen: todas o algunas bases y proyectos.
-- Frecuencia: manual, diaria, semanal o cada N horas.
+- Frecuencia: manual, diaria, semanal, cada N horas o **por ventana**.
+- Ventana: días de la semana, hora desde/hasta y cada cuántas horas.
+- Límite: **máximo de copias por mes** (0 = sin límite).
+- Retención: número de copias y/o días (0 = sin límite).
 - **Comprimir por proyecto** (por defecto): cada proyecto queda en un `.zip` con su código y una carpeta `_database` con sus bases.
-- Retención: número de copias a conservar.
+
+| Campo | Ejemplo | Efecto |
+|---|---|---|
+| Días | Lun, Mié, Vie | Solo esos días |
+| Desde / Hasta | 4 / 18 | Solo entre esas horas |
+| Cada N horas | 2 | Ejecuta cada 2 h dentro de la ventana |
+| Máx./mes | 20 | No supera 20 copias correctas al mes |
+| Retención copias | 5 | Conserva las 5 más recientes |
+| Retención días | 30 | Borra copias con más de 30 días |
 
 ```
 D:\RespaldosLaragon\LaragonBackup\<tarea>\<fecha>\
@@ -198,7 +254,9 @@ La app usa el Node incluido en Electron para lanzar `server.js`; no necesita un 
 - La clave del LAN se valida en el servidor y se canjea por una cookie de sesión aleatoria (`laragon_sess`, `HttpOnly`, 12 h). La clave nunca se guarda en la cookie.
 - Tras 5 intentos fallidos, la IP queda bloqueada 5 minutos.
 - Los respaldos solo se administran desde el equipo local.
-- No se versionan: `panel.config.json`, `lan-key.txt`, `backups.json`, `backups/`, logs, dumps ni bases.
+- Los servicios Windows solo se administran desde el equipo local; las operaciones de escritura piden UAC.
+- No se versionan: `panel.config.json`, `lan-key.txt`, `backups.json`, `winservices.json`, `backups/`, logs, dumps ni bases.
+- No guardes contraseñas de MySQL en archivos versionados. Usa variables de entorno o el Administrador de credenciales.
 - No expongas el panel a Internet sin HTTPS y una autenticación adicional.
 
 ## Desarrollo
@@ -243,6 +301,18 @@ La versión debe ser x64 ZTS e incluir `php8apache2_4.dll`. Revisa `etc\apache2\
 **No hay ZIP en los respaldos**  
 Comprueba que `C:\Windows\System32\tar.exe` exista; si no, usa el modo sin comprimir.
 
+**La vista Windows dice “NSSM no encontrado”**  
+Instala NSSM 2.24 y ajusta `nssmPath` en `panel.config.json`. La ruta por defecto es
+`C:/laragon/nssm-2.24/win64/nssm.exe`.
+
+**Al agregar un servicio no pasa nada**  
+Acepta el aviso de UAC. Si lo cancelas, la operación se aborta sin cambios. Revisa que el
+servicio no exista ya o marca “Reemplazar si ya existe”.
+
+**No aparece una cola Laravel**  
+El proyecto debe tener `artisan` y un `.env` con `QUEUE_CONNECTION` distinto de `sync`.
+Desmarca “Solo colas configuradas” para ver todos los proyectos Laravel detectados.
+
 ## Contenido del repositorio
 
 ```
@@ -252,10 +322,12 @@ instalar.js               instalador: detecta Laragon, escribe config y deja PHP
 AGENTS.md                 reglas para el agente (instalación/verificación)
 backup.js                 motor de respaldos y tareas de Windows
 backup-runner.js          ejecutor sin interfaz (Programador de tareas)
+winservices.js            servicios Windows con NSSM y colas Laravel
 public/                   interfaz web
 electron-app/             app de escritorio (main, preload, iconos)
 iniciar-panel.vbs/.bat    lanzadores del panel web
 panel.config.example.json plantilla de configuración
+INSTALACION_LARAGON_PANEL.xlsx  checklist de instalación y verificación
 LEEME.txt                 notas de uso
 FUNCIONES.md              funciones implementadas y hallazgos de REA
 ```

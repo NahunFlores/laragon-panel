@@ -44,7 +44,12 @@ IMPLEMENTADO EN ESTE PANEL
   ventana nativa, cierre a bandeja, servicios, logs y respaldos.
 - Dashboard: CPU, RAM, disco, GPU, uptime y consumo por servicio.
 - Respaldos programados a otro disco: ZIP por proyecto con su código y bases,
-  retención, historial, ejecución manual y reglas en el Programador de tareas.
+  retención por copias y por días, máximo mensual, ventana de días/horas,
+  historial, ejecución manual y reglas en el Programador de tareas.
+- Servicios de Windows con NSSM: Apache, MySQL, Redis, colas Laravel y
+  servicios personalizados; estado real, auto-inicio, logs, adoptar y quitar.
+- Colas Laravel detectadas por artisan/QUEUE_CONNECTION, con ejecución
+  `queue:work`, logs propios y control start/stop/restart.
 - Compartir por IP: panel en http://IP:9091 con clave, proyectos en
   http://IP:PUERTO, selector de IP, copiar URLs y abrir firewall.
 - SQL Server: ODBC 17 + drivers para las 4 versiones, probado con REA2008.

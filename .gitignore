@@ -7,6 +7,7 @@ release/
 # Configuración local (cada equipo tiene la suya)
 panel.config.json
 backups.json
+winservices.json
 desktop-settings.json
 *.pid
 lan-key.txt
@@ -17,6 +18,7 @@ previews/
 apply-backup-tasks.ps1
 firewall.ps1
 backup-task-*.cmd
+svc-*.cmd
 
 # Logs
 *.log

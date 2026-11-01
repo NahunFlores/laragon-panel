@@ -2,6 +2,8 @@ LARAGON PANEL
 =============
 Panel propio para controlar Laragon sin abrir su interfaz.
 
+Guía de instalación en Excel: INSTALACION_LARAGON_PANEL.xlsx
+
 Requisitos: Node.js 18+.
 
 INICIAR
@@ -30,6 +32,15 @@ SERVICIOS
 - Vista Servicios: Apache, MySQL y apps Node por separado.
 - Cada una se puede iniciar, detener o reiniciar.
 - Node corre en un puerto interno (3100+) y Apache lo publica.
+
+SERVICIOS DE WINDOWS (NSSM)
+---------------------------
+- Vista Windows: Apache, MySQL, Redis y colas Laravel como servicios.
+- Muestra estado real, auto-inicio y logs; permite agregar, adoptar y quitar.
+- NSSM: C:\laragon\nssm-2.24\win64\nssm.exe (configurable con nssmPath).
+- Al instalar o controlar un servicio, Windows pide UAC.
+- Colas: detecta proyectos con artisan y QUEUE_CONNECTION distinto de sync.
+- También permite servicios personalizados (ejecutable, argumentos, carpeta y logs).
 
 LOGS
 ----
@@ -73,8 +84,10 @@ RESPALDOS A DISCO EXTERNO
 - Menú Respaldos → "+ Nueva tarea".
 - Elige disco (C:, D: o un USB/externo conectado) y carpeta.
 - Incluye todas o algunas bases de datos y todos o algunos proyectos.
-- Frecuencia: solo manual, diaria, semanal o cada N horas.
-- Retención: cuántas copias conservar (borra las más antiguas).
+- Frecuencia: manual, diaria, semanal, cada N horas o por ventana.
+- Ventana: días de la semana, desde/hasta qué hora y cada cuántas horas.
+- Límite: máximo de copias por mes (0 = sin límite).
+- Retención: cuántas copias conservar y/o cuántos días (0 = sin límite).
 - "Ejecutar ahora" lanza el respaldo en segundo plano.
 - "Aplicar reglas al sistema" registra la tarea en el Programador de
   tareas de Windows, así corre aunque el panel esté cerrado.

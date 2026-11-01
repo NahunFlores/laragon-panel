@@ -8,6 +8,7 @@ const os = require('os');
 const net = require('net');
 const { spawn, execFile } = require('child_process');
 const backup = require('./backup');
+const winservices = require('./winservices');
 const config = require('./config');
 
 const LARAGON = config.laragonRoot;
@@ -1371,6 +1372,45 @@ async function handle(req, res, isLan) {
         res.writeHead(302, { Location: '/' });
         return res.end();
       }
+    }
+    if (url.pathname.startsWith('/api/winservices') && isLan) {
+      return json(res, 403, { error: 'Los servicios de Windows solo se administran desde el equipo local' });
+    }
+    if (url.pathname === '/api/winservices' && req.method === 'GET') {
+      try { return json(res, 200, await winservices.overview()); }
+      catch (e) { return json(res, 500, { error: e.message }); }
+    }
+    if (url.pathname === '/api/winservices/discover' && req.method === 'GET') {
+      try { return json(res, 200, { services: await winservices.discover(url.searchParams.get('q') || '') }); }
+      catch (e) { return json(res, 500, { error: e.message }); }
+    }
+    if (url.pathname === '/api/winservices/install' && req.method === 'POST') {
+      const body = await readBody(req);
+      try {
+        const r = await winservices.install(body);
+        return json(res, r.ok ? 200 : 400, r);
+      } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+    }
+    if (url.pathname === '/api/winservices/action' && req.method === 'POST') {
+      const body = await readBody(req);
+      try {
+        const r = await winservices.action(String(body.name || ''), String(body.action || ''));
+        return json(res, r.ok ? 200 : 400, r);
+      } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+    }
+    if (url.pathname === '/api/winservices/adopt' && req.method === 'POST') {
+      const body = await readBody(req);
+      try { return json(res, 200, await winservices.adopt(String(body.name || ''))); }
+      catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+    }
+    if (url.pathname === '/api/winservices/forget' && req.method === 'POST') {
+      const body = await readBody(req);
+      try { return json(res, 200, await winservices.forget(String(body.name || ''))); }
+      catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+    }
+    if (url.pathname === '/api/winservices/logs' && req.method === 'GET') {
+      try { return json(res, 200, await winservices.serviceLogs(url.searchParams.get('name') || '')); }
+      catch (e) { return json(res, 500, { error: e.message }); }
     }
     if (url.pathname.startsWith('/api/backup') && isLan) {
       return json(res, 403, { error: 'Los respaldos solo se administran desde el equipo local' });

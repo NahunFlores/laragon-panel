@@ -18,10 +18,13 @@ let lastLogText = '';
 let busy = false;
 let backupData = { jobs: [], history: [], drives: [], tasks: {}, catalog: { databases: [], projects: [] }, state: {}, running: false };
 let backupPoll = null;
+let winData = { core: [], queues: [], managed: [], detected: [], nssm: {}, admin: false };
+let winQueueFilter = '';
 
 const titles = {
   dashboard: ['Dashboard', 'Estado de tu entorno local'],
   services: ['Servicios', 'Apache, MySQL y aplicaciones Node'],
+  windows: ['Servicios Windows', 'Apache, MySQL, Redis y colas como servicios'],
   projects: ['Proyectos', 'Todos los sitios y su puerto'],
   databases: ['Bases de datos', 'Bases, tablas y tamaño'],
   backups: ['Respaldos', 'Copias de bases y proyectos a disco externo'],
@@ -76,6 +79,7 @@ function setView(view) {
   if (view === 'databases') loadDatabases();
   if (view === 'backups') loadBackups();
   if (view === 'dashboard') loadSystem();
+  if (view === 'windows') loadWindows();
   if (view === 'php') { renderPhp(lastOverview); loadExtensions(); }
   if (view === 'share') loadShare();
   if (view === 'services') loadServices();
@@ -468,6 +472,308 @@ async function nodeAction(name, action) {
     await refreshOverview(true);
   }
 }
+
+/* ---------------- Servicios de Windows ---------------- */
+
+function winRunning(status) {
+  return /running/i.test(String(status || ''));
+}
+
+function winInstalled(status) {
+  return !/not installed/i.test(String(status || ''));
+}
+
+function winStateLabel(status) {
+  const s = String(status || '').toLowerCase();
+  if (s === 'running') return 'Activo';
+  if (s === 'stopped') return 'Detenido';
+  if (s.includes('start pending')) return 'Iniciando';
+  if (s.includes('stop pending')) return 'Deteniendo';
+  if (s === 'paused') return 'Pausado';
+  if (s.includes('not installed')) return 'No instalado';
+  return status || 'Desconocido';
+}
+
+function winStateBadge(status) {
+  const installed = winInstalled(status);
+  const up = winRunning(status);
+  const cls = !installed ? 'gray' : up ? 'ok' : 'err';
+  return `<span class="badge ${cls}">${esc(winStateLabel(status))}</span>`;
+}
+
+function winButtons(name, status, opts = {}) {
+  const installed = winInstalled(status);
+  const up = winRunning(status);
+  const n = esc(name);
+  let html = '';
+  if (!installed) {
+    html += `<button class="btn primary" data-win-install="${esc(opts.install || name)}">Instalar</button>`;
+  } else {
+    html += `<button class="btn primary" data-win-act="start" data-win-name="${n}" ${up ? 'disabled' : ''}>Iniciar</button>`;
+    html += `<button class="btn ghost" data-win-act="stop" data-win-name="${n}" ${up ? '' : 'disabled'}>Detener</button>`;
+    html += `<button class="btn ghost" data-win-act="restart" data-win-name="${n}">Reiniciar</button>`;
+  }
+  html += `<button class="btn ghost" data-win-logs="${n}">Logs</button>`;
+  if (installed && opts.auto !== false) {
+    const auto = String(opts.startMode || '').toLowerCase() === 'auto';
+    html += `<button class="btn ghost" data-win-act="${auto ? 'manual' : 'autostart'}" data-win-name="${n}" title="${auto ? 'Desactivar auto-inicio' : 'Activar auto-inicio'}">${auto ? 'Manual' : 'Auto'}</button>`;
+  }
+  if (installed && opts.remove) {
+    html += `<button class="btn danger" data-win-act="remove" data-win-name="${n}">Quitar</button>`;
+  }
+  return html;
+}
+
+function renderWindows() {
+  const admin = !!winData.admin;
+  const badge = $('#winAdminBadge');
+  if (badge) {
+    badge.className = `badge ${admin ? 'ok' : 'gray'}`;
+    badge.textContent = admin ? 'Administrador' : 'Sin permisos de administrador';
+  }
+  const note = $('#winNssmNote');
+  if (note) {
+    if (!winData.nssm || !winData.nssm.exists) {
+      note.hidden = false;
+      note.innerHTML = `<strong>NSSM no encontrado.</strong> Configura <code>nssmPath</code> en <code>panel.config.json</code>. Ruta actual: <code>${esc((winData.nssm || {}).path || '—')}</code>`;
+    } else {
+      note.hidden = true;
+    }
+  }
+
+  const core = winData.core || [];
+  $('#winCore').innerHTML = core.map(c => {
+    const up = winRunning(c.status);
+    return `<article class="card service-card">
+      <div class="service-head">
+        <div class="service-icon ${c.key}" style="background:linear-gradient(135deg,#67e8f9,#818cf8);color:#06101d">${c.label.charAt(0)}</div>
+        <div>
+          <div class="service-name">${esc(c.label)}</div>
+          <div class="service-meta">${esc(c.name)} · ${esc(winStateLabel(c.status))}</div>
+        </div>
+        ${winStateBadge(c.status)}
+      </div>
+      <div class="backup-dest">${esc(c.exe || 'Ejecutable no encontrado')}</div>
+      <div class="service-actions">${winButtons(c.name, c.status, { install: `core:${c.key}`, remove: true, startMode: c.startMode })}</div>
+    </article>`;
+  }).join('') || '<div class="card note">No se detectaron servicios base.</div>';
+
+  const q = (winQueueFilter || '').toLowerCase();
+  const only = $('#winQueueOnly') ? $('#winQueueOnly').checked : true;
+  const queues = (winData.queues || []).filter(x =>
+    (!only || x.suggested || winInstalled(x.status)) &&
+    (!q || `${x.name} ${x.project}`.toLowerCase().includes(q))
+  );
+  $('#winQueueInfo').textContent = `${queues.length} de ${(winData.queues || []).length}`;
+  $('#winQueues').innerHTML = queues.length ? queues.map(x => `<tr>
+    <td class="db-name">${esc(x.name)}</td>
+    <td>${esc(x.project)}</td>
+    <td><code>${esc(x.connection)}</code></td>
+    <td>${winStateBadge(x.status)}</td>
+    <td class="right">${winButtons(x.name, x.status, { install: `queue:${x.name}`, remove: true, startMode: x.startMode })}</td>
+  </tr>`).join('') : '<tr><td colspan="5" class="muted">Sin colas para mostrar.</td></tr>';
+
+  const managed = winData.managed || [];
+  $('#winManaged').innerHTML = managed.length ? managed.map(x => `<tr>
+    <td class="db-name">${esc(x.label || x.name)}<div class="backup-dest">${esc(x.name)}</div></td>
+    <td>${esc(x.kind || 'custom')}</td>
+    <td>${esc(x.startMode || '—')}</td>
+    <td>${winStateBadge(x.status)}</td>
+    <td class="right">${winButtons(x.name, x.status, { install: `existing:${x.name}`, remove: true, auto: false })}
+      <button class="btn ghost" data-win-forget="${esc(x.name)}">Ocultar</button></td>
+  </tr>`).join('') : '<tr><td colspan="5" class="muted">Sin servicios personalizados o adoptados.</td></tr>';
+
+  renderWinDiscovered(winData.detected || []);
+}
+
+function renderWinDiscovered(list) {
+  $('#winSearchInfo').textContent = `${list.length} servicio(s)`;
+  $('#winDiscovered').innerHTML = list.length ? list.map(s => `<tr>
+    <td class="db-name">${esc(s.name)}</td>
+    <td>${esc(s.label || '')}</td>
+    <td>${esc(s.startMode || '—')}</td>
+    <td>${winStateBadge(s.status)}</td>
+    <td class="right">
+      <button class="btn primary" data-win-adopt="${esc(s.name)}">Adoptar</button>
+      ${winInstalled(s.status) ? `<button class="btn ghost" data-win-act="start" data-win-name="${esc(s.name)}">Iniciar</button>
+      <button class="btn ghost" data-win-act="stop" data-win-name="${esc(s.name)}">Detener</button>` : ''}
+    </td>
+  </tr>`).join('') : '<tr><td colspan="5" class="muted">Sin resultados.</td></tr>';
+}
+
+async function loadWindows(silent = false) {
+  try {
+    winData = await api('/api/winservices');
+    renderWindows();
+  } catch (e) {
+    if (!silent) toast('No se pudieron cargar los servicios de Windows', e.message, 'err');
+  }
+}
+
+async function winAction(name, action) {
+  if (action === 'remove' && !confirm(`¿Quitar el servicio ${name}?`)) return;
+  try {
+    const r = await api('/api/winservices/action', { method: 'POST', body: JSON.stringify({ name, action }) });
+    toast('Servicio Windows', r.ok ? `${action}: ${name}` : (r.error || 'Error'), r.ok ? 'ok' : 'err');
+    await loadWindows(true);
+  } catch (e) {
+    toast('No se pudo ejecutar', e.message, 'err');
+  }
+}
+
+async function winLogs(name) {
+  try {
+    const r = await api(`/api/winservices/logs?name=${encodeURIComponent(name)}`);
+    const body = `<div class="field"><label>Salida (${esc(r.stdoutFile || 'sin archivo')})</label><pre class="log" style="max-height:30vh;margin:0">${esc(r.stdout || '(vacío)')}</pre></div>
+      <div class="field"><label>Errores (${esc(r.stderrFile || 'sin archivo')})</label><pre class="log" style="max-height:30vh;margin:0">${esc(r.stderr || '(vacío)')}</pre></div>`;
+    showModal(`Logs · ${name}`, body, [{ label: 'Cerrar', onClick: closeModal }]);
+  } catch (e) {
+    toast('No se pudieron leer los logs', e.message, 'err');
+  }
+}
+
+async function winSearch() {
+  const q = ($('#winSearch').value || '').trim();
+  try {
+    const r = await api(`/api/winservices/discover?q=${encodeURIComponent(q)}`);
+    renderWinDiscovered(r.services || []);
+  } catch (e) {
+    toast('No se pudo buscar', e.message, 'err');
+  }
+}
+
+async function winAdopt(name) {
+  try {
+    await api('/api/winservices/adopt', { method: 'POST', body: JSON.stringify({ name }) });
+    toast('Servicio adoptado', name, 'ok');
+    await loadWindows(true);
+  } catch (e) { toast('No se pudo adoptar', e.message, 'err'); }
+}
+
+async function winForget(name) {
+  try {
+    await api('/api/winservices/forget', { method: 'POST', body: JSON.stringify({ name }) });
+    toast('Oculto del panel', name, 'ok');
+    await loadWindows(true);
+  } catch (e) { toast('No se pudo ocultar', e.message, 'err'); }
+}
+
+function winInstallModal(preset = null) {
+  const cores = winData.core || [];
+  const queues = winData.queues || [];
+  const kind = preset && preset.kind ? preset.kind : 'core';
+  const coreOptions = cores.map(c => `<option value="${esc(c.key)}" ${preset && preset.key === c.key ? 'selected' : ''}>${esc(c.label)} — ${esc(c.exe || 'no encontrado')}</option>`).join('');
+  const queueOptions = queues.map(q => `<option value="${esc(q.name)}" ${preset && preset.name === q.name ? 'selected' : ''}>${esc(q.project)} · ${esc(q.connection)} · ${esc(winStateLabel(q.status))}</option>`).join('');
+
+  showModal('Agregar servicio de Windows', `
+    <div class="field">
+      <label>Tipo de servicio</label>
+      <select id="winKind">
+        <option value="core" ${kind === 'core' ? 'selected' : ''}>Servicio base (Apache / MySQL / Redis)</option>
+        <option value="queue" ${kind === 'queue' ? 'selected' : ''}>Cola Laravel</option>
+        <option value="custom" ${kind === 'custom' ? 'selected' : ''}>Personalizado</option>
+      </select>
+    </div>
+    <div id="winCoreFields" class="field">
+      <label>Servicio</label>
+      <select id="winCoreKey">${coreOptions}</select>
+      <small>Se usa la ruta detectada automáticamente.</small>
+    </div>
+    <div id="winQueueFields" class="field" hidden>
+      <label>Proyecto / cola</label>
+      <select id="winQueueName">${queueOptions || '<option value="">Sin colas detectadas</option>'}</select>
+      <small>Se ejecuta <code>php artisan queue:work</code> con la conexión del proyecto.</small>
+    </div>
+    <div id="winCustomFields" hidden>
+      <div class="field"><label>Nombre del servicio</label><input id="winName" placeholder="MiServicio"></div>
+      <div class="field"><label>Nombre visible</label><input id="winLabel" placeholder="Mi servicio"></div>
+      <div class="field"><label>Ejecutable</label><input id="winExe" placeholder="C:\\ruta\\app.exe"></div>
+      <div class="field"><label>Argumentos</label><input id="winArgs" placeholder="--puerto 3000"></div>
+      <div class="field"><label>Carpeta de trabajo</label><input id="winCwd" placeholder="C:\\ruta"></div>
+      <div class="field"><label>Carpeta de logs</label><input id="winLogDir" placeholder="C:\\laragon\\tmp\\logs"></div>
+    </div>
+    <label class="check-label" style="margin-top:6px"><input type="checkbox" id="winAuto" checked> Iniciar automáticamente con Windows</label>
+    <label class="check-label"><input type="checkbox" id="winOverwrite"> Reemplazar si ya existe</label>
+    <p class="muted small" style="margin:4px 0 0;line-height:1.5">Instalar y controlar servicios requiere que el panel se ejecute como administrador.</p>
+  `, [
+    { label: 'Cancelar', onClick: closeModal },
+    { label: 'Agregar', class: 'primary', onClick: async () => {
+      const kindNow = $('#winKind').value;
+      const payload = {
+        kind: kindNow,
+        autoStart: $('#winAuto').checked,
+        overwrite: $('#winOverwrite').checked,
+      };
+      if (kindNow === 'core') payload.key = $('#winCoreKey').value;
+      else if (kindNow === 'queue') payload.name = $('#winQueueName').value;
+      else {
+        payload.name = $('#winName').value.trim();
+        payload.label = $('#winLabel').value.trim();
+        payload.exe = $('#winExe').value.trim();
+        payload.args = $('#winArgs').value.trim();
+        payload.cwd = $('#winCwd').value.trim();
+        payload.logDir = $('#winLogDir').value.trim();
+      }
+      if (kindNow === 'custom' && (!payload.name || !payload.exe)) {
+        toast('Faltan datos', 'Nombre y ejecutable son obligatorios', 'err');
+        return;
+      }
+      if (kindNow === 'queue' && !payload.name) {
+        toast('Sin cola', 'No hay proyectos de cola detectados', 'err');
+        return;
+      }
+      const btn = document.querySelector('#modalFoot .btn.primary');
+      if (btn) { btn.disabled = true; btn.textContent = 'Instalando…'; }
+      try {
+        const r = await api('/api/winservices/install', { method: 'POST', body: JSON.stringify(payload) });
+        closeModal();
+        toast('Servicio instalado', r.service || 'Correcto', 'ok');
+        await loadWindows(true);
+      } catch (e) {
+        toast('No se pudo instalar', e.message, 'err');
+        if (btn) { btn.disabled = false; btn.textContent = 'Agregar'; }
+      }
+    } },
+  ]);
+
+  const sync = () => {
+    const k = $('#winKind').value;
+    $('#winCoreFields').hidden = k !== 'core';
+    $('#winQueueFields').hidden = k !== 'queue';
+    $('#winCustomFields').hidden = k !== 'custom';
+  };
+  $('#winKind').addEventListener('change', sync);
+  sync();
+}
+
+function winInstallFrom(value) {
+  if (value.startsWith('core:')) winInstallModal({ kind: 'core', key: value.slice(5) });
+  else if (value.startsWith('queue:')) winInstallModal({ kind: 'queue', name: value.slice(6) });
+  else winInstallModal({ kind: 'custom', name: value });
+}
+
+function bindWindows() {
+  $('#winRefresh').addEventListener('click', () => loadWindows());
+  $('#winAddBtn').addEventListener('click', () => winInstallModal());
+  $('#winSearchBtn').addEventListener('click', winSearch);
+  $('#winSearch').addEventListener('keydown', e => { if (e.key === 'Enter') winSearch(); });
+  $('#winQueueSearch').addEventListener('input', e => { winQueueFilter = e.target.value; renderWindows(); });
+  $('#winQueueOnly').addEventListener('change', renderWindows);
+  const click = e => {
+    const install = e.target.closest('[data-win-install]');
+    if (install) { winInstallFrom(install.dataset.winInstall); return; }
+    const act = e.target.closest('[data-win-act]');
+    if (act) { winAction(act.dataset.winName, act.dataset.winAct); return; }
+    const logs = e.target.closest('[data-win-logs]');
+    if (logs) { winLogs(logs.dataset.winLogs); return; }
+    const adopt = e.target.closest('[data-win-adopt]');
+    if (adopt) { winAdopt(adopt.dataset.winAdopt); return; }
+    const forget = e.target.closest('[data-win-forget]');
+    if (forget) { winForget(forget.dataset.winForget); }
+  };
+  ['winCore', 'winQueues', 'winManaged', 'winDiscovered'].forEach(id => $('#' + id).addEventListener('click', click));
+}
+
 
 async function loadDatabases(refresh = false) {
   try {
@@ -1063,6 +1369,12 @@ function scheduleText(job) {
     const days = (s.days || []).map(d => DAY_LABELS[d]).join(', ');
     return `Semanal · ${days || 'sin días'} · ${s.time}`;
   }
+  if (s.type === 'window') {
+    const days = (s.days || []).map(d => DAY_LABELS[d]).join(', ');
+    const start = String(Number(s.startHour) || 0).padStart(2, '0');
+    const end = String(Number(s.endHour) || 24).padStart(2, '0');
+    return `${days || 'sin días'} · ${start}:00–${end}:00 · cada ${s.every || 2} h`;
+  }
   return `Cada ${s.every || 24} h`;
 }
 
@@ -1135,7 +1447,8 @@ function renderBackupJobs() {
       </div>
       <div class="backup-meta">
         <div><span>Frecuencia</span><strong>${esc(scheduleText(job))}</strong></div>
-        <div><span>Retención</span><strong>${job.retention} copias</strong></div>
+        <div><span>Retención</span><strong>${job.retention} copias${job.retentionDays ? ` · ${job.retentionDays} días` : ''}</strong></div>
+        <div><span>Este mes</span><strong>${job.monthlyRuns || 0}${job.maxPerMonth ? ` / ${job.maxPerMonth}` : ''}</strong></div>
         <div><span>Bases</span><strong>${dbs}</strong></div>
         <div><span>Proyectos</span><strong>${prjs}</strong></div>
         <div><span>Formato</span><strong>${job.compress !== false ? 'ZIP por proyecto' : 'Carpetas + SQL'}</strong></div>
@@ -1321,7 +1634,7 @@ function backupJobModal(job = null) {
   const drive = parsed ? parsed[1].toUpperCase() : (preferred ? preferred.root : 'D:\\');
   const sub = parsed ? parsed[2] : 'RespaldosLaragon';
 
-  const s = job ? job.schedule : { type: 'daily', time: '02:00', days: [1, 2, 3, 4, 5], every: 24 };
+  const s = job ? job.schedule : { type: 'daily', time: '02:00', days: [1, 2, 3, 4, 5], every: 24, startHour: 4, endHour: 18 };
   const dbSel = new Set(job ? job.databases.list : []);
   const prjSel = new Set(job ? job.projects.list : []);
   const dbMode = job ? job.databases.mode : 'all';
@@ -1384,6 +1697,7 @@ function backupJobModal(job = null) {
             <option value="daily" ${s.type === 'daily' ? 'selected' : ''}>Diaria</option>
             <option value="weekly" ${s.type === 'weekly' ? 'selected' : ''}>Semanal</option>
             <option value="hourly" ${s.type === 'hourly' ? 'selected' : ''}>Cada N horas</option>
+            <option value="window" ${s.type === 'window' ? 'selected' : ''}>Por ventana (días y horas)</option>
           </select>
         </div>
         <div class="field" id="bjTimeWrap">
@@ -1394,6 +1708,14 @@ function backupJobModal(job = null) {
           <label>Cada cuántas horas</label>
           <input type="number" min="1" max="168" id="bjEvery" value="${Number(s.every) || 24}">
         </div>
+        <div class="field" id="bjStartWrap">
+          <label>Desde la hora</label>
+          <input type="number" min="0" max="23" id="bjStartHour" value="${Number(s.startHour) || 4}">
+        </div>
+        <div class="field" id="bjEndWrap">
+          <label>Hasta la hora</label>
+          <input type="number" min="1" max="24" id="bjEndHour" value="${Number(s.endHour) || 18}">
+        </div>
         <div class="field full" id="bjDaysWrap">
           <label>Días de la semana</label>
           <div class="days-row">${dayChecks}</div>
@@ -1401,6 +1723,14 @@ function backupJobModal(job = null) {
         <div class="field">
           <label>Copias a conservar</label>
           <input type="number" min="1" max="60" id="bjRetention" value="${Number(job ? job.retention : 5)}">
+        </div>
+        <div class="field">
+          <label>Días de retención (0 = sin límite)</label>
+          <input type="number" min="0" max="3650" id="bjRetDays" value="${Number(job && job.retentionDays) || 0}">
+        </div>
+        <div class="field">
+          <label>Máximo por mes (0 = sin límite)</label>
+          <input type="number" min="0" max="1000" id="bjMaxMonth" value="${Number(job && job.maxPerMonth) || 0}">
         </div>
         <div class="field">
           <label>Estado</label>
@@ -1483,12 +1813,16 @@ function backupJobModal(job = null) {
           time: $('#bjTime').value || '02:00',
           every: Number($('#bjEvery').value) || 24,
           days: $$('.bjDay:checked').map(c => Number(c.value)),
+          startHour: Number($('#bjStartHour').value) || 0,
+          endHour: Number($('#bjEndHour').value) || 24,
         },
         databases: { mode: dbModeNow, list: dbList },
         projects: { mode: prjModeNow, list: prjList },
         excludeDeps: $('#bjExclude').checked,
         compress: $('#bjCompress').checked,
         retention: Number($('#bjRetention').value) || 5,
+        retentionDays: Number($('#bjRetDays').value) || 0,
+        maxPerMonth: Number($('#bjMaxMonth').value) || 0,
         enabled: $('#bjEnabled').value === '1',
       };
       const btn = document.querySelector('#modalFoot .btn.primary');
@@ -1522,9 +1856,11 @@ function backupJobModal(job = null) {
   };
   const syncSchedule = () => {
     const type = $('#bjFreq').value;
-    $('#bjTimeWrap').hidden = type === 'manual' || type === 'hourly';
-    $('#bjEveryWrap').hidden = type !== 'hourly';
-    $('#bjDaysWrap').hidden = type !== 'weekly';
+    $('#bjTimeWrap').hidden = !['daily', 'weekly'].includes(type);
+    $('#bjEveryWrap').hidden = !['hourly', 'window'].includes(type);
+    $('#bjDaysWrap').hidden = !['weekly', 'window'].includes(type);
+    $('#bjStartWrap').hidden = type !== 'window';
+    $('#bjEndWrap').hidden = type !== 'window';
   };
   const syncLists = () => {
     const dm = document.querySelector('input[name="bjDbMode"]:checked').value;
@@ -1556,6 +1892,7 @@ function bind() {
     await refreshOverview();
     if (currentView === 'projects') await loadProjects();
     if (currentView === 'databases') await loadDatabases(true);
+    if (currentView === 'windows') await loadWindows(true);
     if (currentView === 'backups') await loadBackups(true);
     if (currentView === 'php') await loadExtensions();
     if (currentView === 'logs') await loadLogs();
@@ -1648,6 +1985,7 @@ function bind() {
   $('#openPhpInfo').addEventListener('click', () => setView('php'));
   $('#openDumps').addEventListener('click', () => openDir('dumps'));
   $('#openPorts').addEventListener('click', () => openPortsModal());
+  bindWindows();
 }
 
 function clock() {

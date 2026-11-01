@@ -24,6 +24,9 @@
       <button class="nav-item" data-view="services">
         <span class="nav-icon">▣</span> Servicios
       </button>
+      <button class="nav-item" data-view="windows">
+        <span class="nav-icon">⊞</span> Windows
+      </button>
       <button class="nav-item" data-view="projects">
         <span class="nav-icon">▤</span> Proyectos <span class="pill" id="navProjectCount">0</span>
       </button>
@@ -210,6 +213,80 @@
       <div class="service-grid" id="servicesGrid"></div>
       <div class="card note">
         Cada servicio se puede iniciar, detener o reiniciar por separado. Las apps Node se ejecutan en un puerto interno y Apache las publica.
+      </div>
+    </section>
+
+    <section class="view" id="view-windows">
+      <div class="card panel backup-hero">
+        <div>
+          <div class="backup-title">Servicios de Windows</div>
+          <p class="muted small" style="margin:6px 0 0;max-width:680px;line-height:1.55">
+            Apache, MySQL, Redis, colas Laravel y servicios personalizados con NSSM.
+            Muestra cuáles están activos y permite agregarlos, iniciarlos, detenerlos o quitarlos.
+          </p>
+        </div>
+        <div class="backup-actions">
+          <span class="badge gray" id="winAdminBadge">Comprobando…</span>
+          <button class="btn ghost" id="winRefresh">↻</button>
+          <button class="btn primary" id="winAddBtn">+ Agregar servicio</button>
+        </div>
+      </div>
+
+      <div class="card note" id="winNssmNote" hidden></div>
+
+      <div class="service-grid" id="winCore"></div>
+
+      <div class="card panel">
+        <div class="panel-head">
+          <h2>Colas Laravel</h2>
+          <span class="muted small" id="winQueueInfo">—</span>
+        </div>
+        <div class="toolbar">
+          <input class="search" id="winQueueSearch" placeholder="Buscar proyecto o servicio…">
+          <label class="check-label"><input type="checkbox" id="winQueueOnly" checked> Solo colas configuradas</label>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>Servicio</th><th>Proyecto</th><th>Conexión</th><th>Estado</th><th class="right">Acciones</th></tr></thead>
+            <tbody id="winQueues"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card panel">
+        <div class="panel-head">
+          <h2>Servicios administrados</h2>
+          <span class="muted small">personalizados o adoptados</span>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>Servicio</th><th>Tipo</th><th>Auto-inicio</th><th>Estado</th><th class="right">Acciones</th></tr></thead>
+            <tbody id="winManaged"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card panel">
+        <div class="panel-head">
+          <h2>Buscar servicio de Windows</h2>
+          <span class="muted small" id="winSearchInfo">—</span>
+        </div>
+        <div class="toolbar">
+          <input class="search" id="winSearch" placeholder="Nombre o descripción del servicio…">
+          <button class="btn ghost" id="winSearchBtn">Buscar</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>Nombre</th><th>Descripción</th><th>Inicio</th><th>Estado</th><th class="right">Acciones</th></tr></thead>
+            <tbody id="winDiscovered"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card note">
+        <strong>Permisos:</strong> consultar el estado no requiere administrador. Al instalar, iniciar,
+        detener o quitar, Windows pedirá UAC si el panel no está elevado. NSSM se configura en
+        <code>panel.config.json</code> con <code>nssmPath</code>.
       </div>
     </section>
 
