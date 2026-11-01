@@ -10,6 +10,8 @@ INICIAR
 -------
 - App de escritorio: doble clic en "Laragon Panel" (Escritorio) o en
   C:\laragon-panel\electron-app\node_modules\electron\dist\electron.exe
+- Versión portable: dist\LaragonPanel\LaragonPanel.exe (no requiere Node instalado).
+  Datos y configuración quedan junto al .exe; crea inicio con Windows al primer arranque.
 - Panel web: doble clic en iniciar-panel.vbs  → http://127.0.0.1:9090
 - Inicio con Windows: acceso directo en
   %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Laragon Panel.lnk

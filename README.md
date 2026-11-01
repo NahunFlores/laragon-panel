@@ -66,6 +66,45 @@ opencode
 El agente ejecuta el instalador, verifica que PHP quede parcheado y comprueba la API
 (`/api/overview`, `/api/projects`, `/api/logs`, `/api/preview`) antes de dar por terminada la instalación.
 
+## Versión portable (recomendada para servidor)
+
+Genera una carpeta con `LaragonPanel.exe` que no necesita instalar Node ni Electron:
+
+```bat
+cd C:\laragon-panel
+node build-portable.js
+```
+
+Resultado:
+
+```
+C:\laragon-panel\dist\LaragonPanel\
+  LaragonPanel.exe
+  panel.config.json
+  data\                     (se crea al primer arranque)
+  resources\
+    app\                    main.js, preload.js, iconos
+    panel\                  server.js, public, backup, winservices
+    node\node.exe           Node incluido
+```
+
+También se crea `dist\LaragonPanel-portable.zip` (sin `data`).
+
+### Usarla en el servidor
+
+1. Copia la carpeta o el ZIP al servidor, por ejemplo `C:\LaragonPanel`.
+2. Edita `panel.config.json`:
+   - `laragonRoot`: ruta real de Laragon.
+   - `nssmPath`: ruta de NSSM.
+   - `mysqlPort` se detecta desde `usr\laragon.ini`; puedes fijarlo si quieres.
+3. Ejecuta `LaragonPanel.exe`.
+4. El primer arranque crea `data\` (clave LAN, ajustes, respaldos) y un acceso directo en **Inicio → Startup**.
+5. Abre `http://127.0.0.1:9090`.
+
+El acceso directo se actualiza solo si mueves la carpeta. Se ejecuta **al iniciar sesión** en Windows. Si el servidor arranca sin iniciar sesión, necesitas auto-login o ejecutar el panel como servicio (sin icono de bandeja).
+
+Para actualizar el panel en el servidor, reemplaza `resources\panel`, `resources\app` y `LaragonPanel.exe`; conserva `panel.config.json` y `data\`.
+
 ## Configuración
 
 `panel.config.json` se lee al arrancar. Las variables de entorno tienen prioridad.
@@ -323,6 +362,7 @@ AGENTS.md                 reglas para el agente (instalación/verificación)
 backup.js                 motor de respaldos y tareas de Windows
 backup-runner.js          ejecutor sin interfaz (Programador de tareas)
 winservices.js            servicios Windows con NSSM y colas Laravel
+build-portable.js         genera dist\LaragonPanel\LaragonPanel.exe portable
 public/                   interfaz web
 electron-app/             app de escritorio (main, preload, iconos)
 iniciar-panel.vbs/.bat    lanzadores del panel web

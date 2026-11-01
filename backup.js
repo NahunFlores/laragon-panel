@@ -15,18 +15,19 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 
-const { laragonRoot, mysqlPort, wwwRoot } = require('./config');
+const { laragonRoot, mysqlPort, wwwRoot, dataDir } = require('./config');
 
 const LARAGON = laragonRoot;
 const MYSQL_PORT = mysqlPort;
 const WWW = wwwRoot;
 const PANEL_DIR = __dirname;
-const BACKUP_DIR = path.join(PANEL_DIR, 'backups');
-const CONFIG_FILE = path.join(PANEL_DIR, 'backups.json');
+const DATA_DIR = dataDir;
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+const CONFIG_FILE = path.join(DATA_DIR, 'backups.json');
 const STATE_FILE = path.join(BACKUP_DIR, 'state.json');
 const LOCK_FILE = path.join(BACKUP_DIR, 'backup.lock');
 const TASKS_DATA = path.join(BACKUP_DIR, 'tasks.json');
-const TASKS_SCRIPT = path.join(PANEL_DIR, 'apply-backup-tasks.ps1');
+const TASKS_SCRIPT = path.join(DATA_DIR, 'apply-backup-tasks.ps1');
 const TASK_PREFIX = 'LaragonPanel_Backup_';
 const HISTORY_LIMIT = 100;
 const SNAPSHOT_RE = /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(-\d+)?$/;
@@ -1037,10 +1038,11 @@ function taskName(job) {
 }
 
 function taskCmdPath(job) {
-  return path.join(PANEL_DIR, `backup-task-${job.id}.cmd`);
+  return path.join(DATA_DIR, `backup-task-${job.id}.cmd`);
 }
 
 function nodeForTask() {
+  if (process.env.PANEL_NODE && fs.existsSync(process.env.PANEL_NODE)) return process.env.PANEL_NODE;
   if (/node\.exe$/i.test(process.execPath)) return process.execPath;
   const sys = 'C:/Program Files/nodejs/node.exe';
   if (fs.existsSync(sys)) return sys;
@@ -1193,7 +1195,10 @@ function spawnRunner(jobId, scheduled) {
   ensureDirs();
   const args = [path.join(PANEL_DIR, 'backup-runner.js'), '--job', jobId];
   if (scheduled) args.push('--scheduled');
-  const child = spawn(process.execPath, args, {
+  const node = process.env.PANEL_NODE && fs.existsSync(process.env.PANEL_NODE)
+    ? process.env.PANEL_NODE
+    : process.execPath;
+  const child = spawn(node, args, {
     cwd: PANEL_DIR,
     detached: true,
     stdio: 'ignore',

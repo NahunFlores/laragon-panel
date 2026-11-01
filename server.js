@@ -16,8 +16,8 @@ const MYSQL_PORT = config.mysqlPort;
 const PANEL_PORT = config.panelPort;
 const PANEL_LAN_PORT = config.lanPort;
 const LEGACY_DUMPS = config.legacyDumps ? path.join(config.legacyDumps, 'dumps') : null;
-const LAN_KEY_FILE = path.join(__dirname, 'lan-key.txt');
-const PANEL_PID_FILE = path.join(__dirname, 'panel.pid');
+const LAN_KEY_FILE = path.join(config.dataDir, 'lan-key.txt');
+const PANEL_PID_FILE = path.join(config.dataDir, 'panel.pid');
 
 function getLanKey() {
   try {
@@ -787,7 +787,7 @@ function httpStatus(port) {
   });
 }
 
-const PREVIEW_DIR = path.join(__dirname, 'previews');
+const PREVIEW_DIR = path.join(config.dataDir, 'previews');
 const PREVIEW_TTL = 15 * 60 * 1000;
 const PREVIEW_MAX = 3;
 const PREVIEW_WIDTH = 1000;
@@ -1594,7 +1594,7 @@ async function handle(req, res, isLan) {
         'netsh advfirewall firewall add rule name="Laragon Projects LAN" dir=in action=allow protocol=TCP localport=8001-8100 profile=any',
         'netsh advfirewall firewall add rule name="Laragon Apache LAN" dir=in action=allow protocol=TCP localport=80 profile=any',
       ].join('\r\n');
-      const ps1 = path.join(__dirname, 'firewall.ps1');
+      const ps1 = path.join(config.dataDir, 'firewall.ps1');
       fs.writeFileSync(ps1, script, 'utf8');
       const cmd = `Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','${ps1}'`;
       spawn('powershell.exe', ['-NoProfile', '-Command', cmd], { detached: true, stdio: 'ignore', windowsHide: true }).unref();

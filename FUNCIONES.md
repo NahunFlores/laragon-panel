@@ -42,6 +42,8 @@ IMPLEMENTADO EN ESTE PANEL
 - Logs Apache/MySQL/Node con filtro, auto-refresh y descarga.
 - App de escritorio Electron: bandeja, notificaciones, inicio con Windows,
   ventana nativa, cierre a bandeja, servicios, logs y respaldos.
+- Versión portable: LaragonPanel.exe con Node incluido, datos junto al ejecutable,
+  arranque al iniciar sesión y actualización automática del acceso directo si se mueve.
 - Dashboard: CPU, RAM, disco, GPU, uptime y consumo por servicio.
 - Respaldos programados a otro disco: ZIP por proyecto con su código y bases,
   retención por copias y por días, máximo mensual, ventana de días/horas,

@@ -22,7 +22,7 @@ const backup = require('./backup');
 
 const LARAGON = config.laragonRoot;
 const NSSM = config.nssmPath || 'C:/laragon/nssm-2.24/win64/nssm.exe';
-const STATE_FILE = path.join(__dirname, 'winservices.json');
+const STATE_FILE = path.join(config.dataDir, 'winservices.json');
 const LOG_DIR = path.join(LARAGON, 'tmp', 'logs');
 const SERVICE_PREFIX = 'Laragon';
 
@@ -61,7 +61,7 @@ function hasNssm() {
 }
 
 function wrapperPath(name) {
-  return path.join(__dirname, `svc-${slug(name)}.cmd`);
+  return path.join(config.dataDir, `svc-${slug(name)}.cmd`);
 }
 
 function writeWrapper(spec) {

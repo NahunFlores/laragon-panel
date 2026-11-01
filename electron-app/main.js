@@ -6,14 +6,29 @@ const fs = require('fs');
 const http = require('http');
 const { spawn } = require('child_process');
 
-const PANEL_DIR = path.resolve(__dirname, '..');
+const IS_PACKAGED = app.isPackaged;
+const APP_DIR = IS_PACKAGED ? path.dirname(process.execPath) : path.resolve(__dirname, '..');
+const PANEL_DIR = IS_PACKAGED ? path.join(process.resourcesPath, 'panel') : path.resolve(__dirname, '..');
+const DATA_DIR = IS_PACKAGED ? path.join(APP_DIR, 'data') : PANEL_DIR;
+const CONFIG_FILE = IS_PACKAGED ? path.join(APP_DIR, 'panel.config.json') : path.join(PANEL_DIR, 'panel.config.json');
+const BUNDLED_NODE = path.join(process.resourcesPath, 'node', 'node.exe');
+const NODE_EXE = fs.existsSync(BUNDLED_NODE) ? BUNDLED_NODE : process.execPath;
+
+if (IS_PACKAGED) {
+  try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
+  try { app.setPath('userData', DATA_DIR); } catch {}
+}
+process.env.PANEL_DATA = DATA_DIR;
+process.env.PANEL_CONFIG = CONFIG_FILE;
+process.env.PANEL_NODE = NODE_EXE;
+
 let fileConfig = {};
-try { fileConfig = JSON.parse(fs.readFileSync(path.join(PANEL_DIR, 'panel.config.json'), 'utf8')); } catch {}
+try { fileConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch {}
 const PANEL_PORT = Number(process.env.PANEL_PORT || fileConfig.panelPort || 9090);
 const PANEL_URL = `http://127.0.0.1:${PANEL_PORT}`;
 const ICON = path.join(__dirname, 'icon.png');
 const ICON_ICO = path.join(__dirname, 'icon.ico');
-const SETTINGS_FILE = path.join(__dirname, 'desktop-settings.json');
+const SETTINGS_FILE = path.join(DATA_DIR, 'desktop-settings.json');
 const START_HIDDEN = process.argv.includes('--hidden');
 
 let win = null;
@@ -21,17 +36,28 @@ let tray = null;
 let serverChild = null;
 let quitting = false;
 let notificationsEnabled = true;
+let autostartInit = false;
+let autostartEnabled = false;
+let portableDir = '';
 let hideNoticeShown = false;
 let backupWasRunning = false;
 
 try {
   const saved = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
   if (typeof saved.notifications === 'boolean') notificationsEnabled = saved.notifications;
+  if (typeof saved.autostartInit === 'boolean') autostartInit = saved.autostartInit;
+  if (typeof saved.autostartEnabled === 'boolean') autostartEnabled = saved.autostartEnabled;
+  if (typeof saved.portableDir === 'string') portableDir = saved.portableDir;
 } catch {}
 
 function saveDesktopSettings() {
   try {
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ notifications: notificationsEnabled }, null, 2), 'utf8');
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify({
+      notifications: notificationsEnabled,
+      autostartInit,
+      autostartEnabled,
+      portableDir,
+    }, null, 2), 'utf8');
   } catch {}
 }
 let last = { apache: null, mysql: null };
@@ -62,11 +88,17 @@ function api(pathname, options = {}) {
 
 async function ensureServer() {
   try { await api('/api/overview'); return; } catch {}
-  serverChild = spawn(process.execPath, [path.join(PANEL_DIR, 'server.js')], {
+  serverChild = spawn(NODE_EXE, [path.join(PANEL_DIR, 'server.js')], {
     cwd: PANEL_DIR,
     stdio: 'ignore',
     windowsHide: true,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: '1',
+      PANEL_NODE: NODE_EXE,
+      PANEL_DATA: DATA_DIR,
+      PANEL_CONFIG: CONFIG_FILE,
+    },
   });
   for (let i = 0; i < 80; i++) {
     await new Promise(r => setTimeout(r, 300));
@@ -124,7 +156,7 @@ function isAutostart() {
   return fs.existsSync(autostartShortcut());
 }
 
-function setAutostart(enabled) {
+function setAutostart(enabled, silent = false) {
   const lnk = autostartShortcut();
   try {
     if (enabled) {
@@ -133,16 +165,20 @@ function setAutostart(enabled) {
       shell.writeShortcutLink(lnk, 'create', {
         target: process.execPath,
         args,
-        cwd: app.getAppPath(),
+        cwd: APP_DIR,
         icon: ICON_ICO,
         iconIndex: 0,
         description: 'Laragon Panel',
       });
-      notify('Inicio con Windows', 'Activado');
+      if (!silent) notify('Inicio con Windows', 'Activado');
     } else {
       if (fs.existsSync(lnk)) fs.unlinkSync(lnk);
-      notify('Inicio con Windows', 'Desactivado');
+      if (!silent) notify('Inicio con Windows', 'Desactivado');
     }
+    autostartInit = true;
+    autostartEnabled = !!enabled;
+    portableDir = APP_DIR;
+    saveDesktopSettings();
     return { ok: true, enabled: isAutostart() };
   } catch (e) {
     return { ok: false, error: e.message, enabled: isAutostart() };
@@ -274,6 +310,20 @@ if (!gotLock) {
     tray.on('double-click', () => showWindow());
     await updateTray();
     setInterval(updateTray, 5000);
+
+    // En la versión portable, iniciar con Windows en el primer arranque.
+    if (IS_PACKAGED) {
+      if (!autostartInit) {
+        setAutostart(true, true);
+      } else if (autostartEnabled) {
+        // Recrear el acceso directo: corrige ruta si la carpeta se movió.
+        setAutostart(true, true);
+      } else if (portableDir !== APP_DIR) {
+        portableDir = APP_DIR;
+        saveDesktopSettings();
+      }
+    }
+
     setTimeout(() => notify('Laragon Panel', START_HIDDEN ? 'Iniciado en segundo plano.' : 'Aplicación iniciada. Apache y MySQL listos.'), 1500);
   });
 }
