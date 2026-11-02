@@ -115,8 +115,6 @@ Repositorio y releases públicas:
 
 ### Actualizar desde la propia carpeta
 
-En la carpeta portable ejecuta:
-
 ```bat
 actualizar.bat
 ```
@@ -125,10 +123,46 @@ El script:
 
 1. Consulta la última release.
 2. Descarga el ZIP.
-3. Cierra el panel.
-4. Reemplaza `LaragonPanel.exe` y `resources`.
-5. Conserva `panel.config.json` y `data`.
-6. Vuelve a iniciar el panel.
+3. Crea un backup completo de `LaragonPanel.exe`, `resources`, configuración y documentación.
+4. Pide confirmación.
+5. Cierra el panel.
+6. Reemplaza los archivos.
+7. Conserva `panel.config.json` y `data`.
+8. Vuelve a iniciar el panel.
+
+Backup resultante:
+
+```text
+C:\LaragonPanel.bak-AAAA-MM-DD-HHmmss\
+```
+
+### Si modificaste el código
+
+Usa:
+
+```bat
+actualizar.bat -KeepPanel
+```
+
+Actualiza `LaragonPanel.exe`, `resources\app` y `resources\node`, pero **conserva `resources\panel`** (tu `server.js`, `config.js`, `backup.js`, `app.js` personalizados).
+
+Para actualizar también el código del panel tendrás que fusionar manualmente; el backup automático permite volver atrás si algo falla.
+
+### Otros modos
+
+```bat
+actualizar.bat -BackupOnly
+```
+
+Solo crea el backup, sin descargar ni reemplazar nada.
+
+```bat
+actualizar.bat -Yes
+```
+
+No pide confirmación (para automatización).
+
+> Un backup no fusiona cambios personalizados. Si el servidor tiene puertos, FastCGI/NTS o credenciales propias, usa `-KeepPanel` o mantén una rama/overlay propio.
 
 También puedes descargar el ZIP manualmente y reemplazar la carpeta conservando `panel.config.json` y `data`.
 

@@ -20,7 +20,10 @@ INICIAR
 ACTUALIZAR
 ----------
 - En la carpeta portable: ejecutar actualizar.bat.
-- Descarga la última release y conserva panel.config.json y data.
+- Crea un backup completo antes de reemplazar.
+- Conserva panel.config.json y data.
+- Si modificaste resources\panel: usar actualizar.bat -KeepPanel.
+- Solo backup: actualizar.bat -BackupOnly.
 - Releases: https://github.com/NahunFlores/laragon-panel/releases/latest
 
 APP DE ESCRITORIO (Windows / Electron)
