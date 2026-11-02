@@ -495,14 +495,21 @@ function actionWrapper(name, act) {
   const lines = ['@echo off'];
   if (act === 'remove') {
     lines.push(`${n} stop ${name} confirm`);
+    lines.push('timeout /t 1 /nobreak >nul');
     lines.push(`${n} remove ${name} confirm`);
   } else if (act === 'restart') {
+    // Mismo patrón que el manager: stop, esperar, start y reintentar.
     lines.push(`${n} stop ${name} confirm`);
-    lines.push(`taskkill /F /FI "SERVICES eq ${name}" >nul 2>&1`);
-    lines.push('ping -n 4 127.0.0.1 >nul');
+    lines.push('timeout /t 2 /nobreak >nul');
     lines.push(`${n} start ${name}`);
-    lines.push('ping -n 4 127.0.0.1 >nul');
-    lines.push(`sc query ${name} | find "RUNNING" >nul || ${n} start ${name}`);
+    lines.push('timeout /t 4 /nobreak >nul');
+    lines.push(`sc query ${name} | find "RUNNING" >nul && exit /b 0`);
+    lines.push(`${n} start ${name}`);
+    lines.push('timeout /t 7 /nobreak >nul');
+    lines.push(`sc query ${name} | find "RUNNING" >nul && exit /b 0`);
+    lines.push(`${n} start ${name}`);
+    lines.push('timeout /t 10 /nobreak >nul');
+    lines.push(`sc query ${name} | find "RUNNING" >nul`);
   }
   fs.writeFileSync(file, lines.join('\r\n') + '\r\n', 'utf8');
   return file;
@@ -514,6 +521,13 @@ async function action(name, act) {
   const list = await listWindowsServices(true);
   const svc = findService(list, safe);
   if (!svc) throw new Error('El servicio no está instalado');
+
+  if (act === 'start' && /running/i.test(String(svc.State || ''))) {
+    return { ok: true, already: true, steps: [] };
+  }
+  if (act === 'stop' && /stopped/i.test(String(svc.State || ''))) {
+    return { ok: true, already: true, steps: [] };
+  }
 
   const map = {
     start: [NSSM, 'start', safe],
