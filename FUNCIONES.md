@@ -44,8 +44,9 @@ IMPLEMENTADO EN ESTE PANEL
   ventana nativa, cierre a bandeja, servicios, logs y respaldos.
 - Versión portable: LaragonPanel.exe con Node incluido, datos junto al ejecutable,
   arranque al iniciar sesión y actualización automática del acceso directo si se mueve.
-- Actualización desde GitHub Releases con actualizar.bat, backup completo previo,
-  modo -KeepPanel para conservar código personalizado y modo -BackupOnly.
+- Actualización desde GitHub Releases con backup completo previo. Modo seguro por
+  defecto conserva resources\panel y deja .new; -Full reemplaza el panel; -BackupOnly
+  solo guarda copia.
 - Dashboard: CPU, RAM, disco, GPU, uptime y consumo por servicio.
 - Respaldos programados a otro disco: ZIP por proyecto con su código y bases,
   retención por copias y por días (0 copias + 31 días = renovación mensual),

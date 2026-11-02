@@ -126,9 +126,11 @@ El script:
 3. Crea un backup completo de `LaragonPanel.exe`, `resources`, configuración y documentación.
 4. Pide confirmación.
 5. Cierra el panel.
-6. Reemplaza los archivos.
-7. Conserva `panel.config.json` y `data`.
-8. Vuelve a iniciar el panel.
+6. Actualiza `LaragonPanel.exe`, la parte Electron y Node.
+7. **Conserva `resources\panel`** (tu código personalizado).
+8. Copia los archivos nuevos o modificados del panel como `.new`.
+9. Conserva `panel.config.json` y `data`.
+10. Vuelve a iniciar el panel.
 
 Backup resultante:
 
@@ -136,19 +138,35 @@ Backup resultante:
 C:\LaragonPanel.bak-AAAA-MM-DD-HHmmss\
 ```
 
-### Si modificaste el código
+### Modo seguro por defecto
 
-Usa:
+`actualizar.bat` **no reemplaza tu `resources\panel`**. Si un archivo del panel cambió en la nueva versión, deja:
+
+```text
+resources\panel\server.js.new
+resources\panel\winservices.js.new
+...
+```
+
+Tú decides si fusionas o reemplazas ese archivo. Así no se pierden puertos, contraseña, FastCGI/NTS ni otros cambios.
+
+### Actualización completa del panel
+
+Solo si estás seguro:
+
+```bat
+actualizar.bat -Full
+```
+
+Reemplaza también `resources\panel`. Antes crea el backup completo, así puedes volver atrás.
+
+### Otros modos
 
 ```bat
 actualizar.bat -KeepPanel
 ```
 
-Actualiza `LaragonPanel.exe`, `resources\app` y `resources\node`, pero **conserva `resources\panel`** (tu `server.js`, `config.js`, `backup.js`, `app.js` personalizados).
-
-Para actualizar también el código del panel tendrás que fusionar manualmente; el backup automático permite volver atrás si algo falla.
-
-### Otros modos
+Compatibilidad: igual al modo seguro.
 
 ```bat
 actualizar.bat -BackupOnly
@@ -160,9 +178,9 @@ Solo crea el backup, sin descargar ni reemplazar nada.
 actualizar.bat -Yes
 ```
 
-No pide confirmación (para automatización).
+No pide confirmación (para automatización; sigue siendo modo seguro).
 
-> Un backup no fusiona cambios personalizados. Si el servidor tiene puertos, FastCGI/NTS o credenciales propias, usa `-KeepPanel` o mantén una rama/overlay propio.
+> En un servidor con cambios propios, usa el modo seguro y fusiona los `.new`. Un backup permite volver atrás, pero no fusiona código.
 
 También puedes descargar el ZIP manualmente y reemplazar la carpeta conservando `panel.config.json` y `data`.
 

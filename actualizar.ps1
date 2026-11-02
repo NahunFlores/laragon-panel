@@ -2,14 +2,16 @@
 # Conserva panel.config.json y data.
 #
 # Modos:
-#   actualizar.bat                 Actualización completa (con backup y confirmación)
-#   actualizar.bat -KeepPanel      Actualiza EXE/Electron/docs y conserva resources\panel
+#   actualizar.bat                 Modo seguro: conserva resources\panel y deja .new
+#   actualizar.bat -Full           Reemplaza también resources\panel (con backup)
+#   actualizar.bat -KeepPanel      Igual que el modo seguro (compatibilidad)
 #   actualizar.bat -BackupOnly     Solo crea un backup, no actualiza
 #   actualizar.bat -Yes            No pide confirmación
 
 param(
   [switch]$BackupOnly,
   [switch]$KeepPanel,
+  [switch]$Full,
   [switch]$Yes
 )
 
@@ -53,11 +55,11 @@ if (-not $asset) {
   throw "La release $($release.tag_name) no tiene LaragonPanel-portable.zip"
 }
 
-$mode = if ($KeepPanel) { 'EXE/Electron/docs (se conserva resources\panel)' } else { 'completa (incluye resources\panel)' }
+$mode = if ($Full) { 'completa (reemplaza resources\panel)' } else { 'segura (conserva resources\panel y deja .new)' }
 Write-Host "Versión disponible: $($release.tag_name)"
 Write-Host "Modo: $mode"
 if (-not $Yes) {
-  $answer = Read-Host 'Se creará un backup y se reemplazarán archivos. ¿Continuar? (s/N)'
+  $answer = Read-Host "Se creará un backup. Modo: $mode. ¿Continuar? (s/N)"
   if ($answer -notmatch '^[sSyY]') {
     Write-Host 'Actualización cancelada.'
     exit 0
@@ -98,7 +100,12 @@ try {
   Write-Host 'Reemplazando archivos...'
   Copy-Item (Join-Path $newDir 'LaragonPanel.exe') $appDir -Force
 
-  if ($KeepPanel) {
+  if ($Full) {
+    $oldResources = Join-Path $appDir 'resources'
+    if (Test-Path $oldResources) { Remove-Item $oldResources -Recurse -Force }
+    Copy-Item (Join-Path $newDir 'resources') $appDir -Recurse -Force
+    Write-Host 'resources\panel reemplazado completamente.'
+  } else {
     $oldApp = Join-Path $appDir 'resources\app'
     $oldNode = Join-Path $appDir 'resources\node'
     if (Test-Path $oldApp) { Remove-Item $oldApp -Recurse -Force }
@@ -107,11 +114,40 @@ try {
       if (Test-Path $oldNode) { Remove-Item $oldNode -Recurse -Force }
       Copy-Item (Join-Path $newDir 'resources\node') $oldNode -Recurse -Force
     }
-    Write-Host 'resources\panel conservado (código personalizado intacto).'
-  } else {
-    $oldResources = Join-Path $appDir 'resources'
-    if (Test-Path $oldResources) { Remove-Item $oldResources -Recurse -Force }
-    Copy-Item (Join-Path $newDir 'resources') $appDir -Recurse -Force
+
+    $oldPanel = Join-Path $appDir 'resources\panel'
+    $newPanel = Join-Path $newDir 'resources\panel'
+    if (-not (Test-Path $oldPanel)) {
+      Copy-Item $newPanel $oldPanel -Recurse -Force
+      Write-Host 'resources\panel creado desde la release.'
+    } else {
+      $added = 0
+      $conflicts = @()
+      Get-ChildItem $newPanel -Recurse -File | ForEach-Object {
+        $rel = $_.FullName.Substring($newPanel.Length).TrimStart('\')
+        $dst = Join-Path $oldPanel $rel
+        $parent = Split-Path $dst -Parent
+        if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        if (-not (Test-Path $dst)) {
+          Copy-Item $_.FullName $dst -Force
+          $added++
+        } else {
+          $h1 = (Get-FileHash $dst -Algorithm SHA256).Hash
+          $h2 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+          if ($h1 -ne $h2) {
+            Copy-Item $_.FullName "$dst.new" -Force
+            $conflicts += $rel
+          }
+        }
+      }
+      Write-Host "resources\panel conservado. Archivos nuevos: $added."
+      if ($conflicts.Count -gt 0) {
+        Write-Host "Cambios nuevos para fusionar ($($conflicts.Count)):"
+        $conflicts | ForEach-Object { Write-Host "  .new: $_" }
+      } else {
+        Write-Host 'No hay cambios pendientes en resources\panel.'
+      }
+    }
   }
 
   foreach ($file in @('LEEME.txt', 'README.md', 'INSTALACION_LARAGON_PANEL.xlsx', 'actualizar.ps1', 'actualizar.bat', 'VERSION')) {

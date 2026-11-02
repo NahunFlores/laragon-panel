@@ -22,7 +22,8 @@ ACTUALIZAR
 - En la carpeta portable: ejecutar actualizar.bat.
 - Crea un backup completo antes de reemplazar.
 - Conserva panel.config.json y data.
-- Si modificaste resources\panel: usar actualizar.bat -KeepPanel.
+- Modo seguro por defecto: conserva resources\panel y deja los cambios como .new.
+- Actualización completa del panel: actualizar.bat -Full.
 - Solo backup: actualizar.bat -BackupOnly.
 - Releases: https://github.com/NahunFlores/laragon-panel/releases/latest
 
