@@ -48,8 +48,9 @@ IMPLEMENTADO EN ESTE PANEL
   modo -KeepPanel para conservar código personalizado y modo -BackupOnly.
 - Dashboard: CPU, RAM, disco, GPU, uptime y consumo por servicio.
 - Respaldos programados a otro disco: ZIP por proyecto con su código y bases,
-  retención por copias y por días, máximo mensual, ventana de días/horas,
-  historial, ejecución manual y reglas en el Programador de tareas.
+  retención por copias y por días (0 copias + 31 días = renovación mensual),
+  máximo mensual, ventana de días/horas, historial, ejecución manual y reglas
+  en el Programador de tareas.
 - Servicios de Windows con NSSM: Apache, MySQL, Redis, colas Laravel y
   servicios personalizados; estado real, auto-inicio, logs, adoptar y quitar.
 - Colas Laravel detectadas por artisan/QUEUE_CONNECTION, con ejecución

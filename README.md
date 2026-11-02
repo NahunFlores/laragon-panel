@@ -300,8 +300,11 @@ En **Respaldos → Nueva tarea**:
 | Desde / Hasta | 4 / 18 | Solo entre esas horas |
 | Cada N horas | 2 | Ejecuta cada 2 h dentro de la ventana |
 | Máx./mes | 20 | No supera 20 copias correctas al mes |
-| Retención copias | 5 | Conserva las 5 más recientes |
-| Retención días | 30 | Borra copias con más de 30 días |
+| Retención copias | 0 | 0 = sin límite por cantidad; conserva todas |
+| Retención días | 31 | Borra la más antigua cuando supera 31 días |
+
+Para una **renovación mensual**: `Copias a conservar = 0` y `Días de retención = 31`.
+Se generan todas las copias del mes y solo se elimina la más antigua cuando cumple 31 días.
 
 ```
 D:\RespaldosLaragon\LaragonBackup\<tarea>\<fecha>\

@@ -1447,7 +1447,7 @@ function renderBackupJobs() {
       </div>
       <div class="backup-meta">
         <div><span>Frecuencia</span><strong>${esc(scheduleText(job))}</strong></div>
-        <div><span>Retención</span><strong>${job.retention} copias${job.retentionDays ? ` · ${job.retentionDays} días` : ''}</strong></div>
+        <div><span>Retención</span><strong>${job.retention ? `${job.retention} copias` : 'Sin límite'}${job.retentionDays ? ` · ${job.retentionDays} días` : ''}</strong></div>
         <div><span>Este mes</span><strong>${job.monthlyRuns || 0}${job.maxPerMonth ? ` / ${job.maxPerMonth}` : ''}</strong></div>
         <div><span>Bases</span><strong>${dbs}</strong></div>
         <div><span>Proyectos</span><strong>${prjs}</strong></div>
@@ -1721,8 +1721,8 @@ function backupJobModal(job = null) {
           <div class="days-row">${dayChecks}</div>
         </div>
         <div class="field">
-          <label>Copias a conservar</label>
-          <input type="number" min="1" max="60" id="bjRetention" value="${Number(job ? job.retention : 5)}">
+          <label>Copias a conservar (0 = solo por días)</label>
+          <input type="number" min="0" max="1000" id="bjRetention" value="${Number(job ? job.retention : 5)}">
         </div>
         <div class="field">
           <label>Días de retención (0 = sin límite)</label>
@@ -1740,6 +1740,10 @@ function backupJobModal(job = null) {
           </select>
         </div>
       </div>
+      <p class="muted small" style="margin:10px 0 0;line-height:1.55">
+        Para conservar todas las copias de un mes: <strong>Copias = 0</strong> y
+        <strong>Días = 31</strong>. Se borra la más antigua cuando supera ese tiempo.
+      </p>
     </div>
 
     <div class="form-section">
@@ -1820,7 +1824,7 @@ function backupJobModal(job = null) {
         projects: { mode: prjModeNow, list: prjList },
         excludeDeps: $('#bjExclude').checked,
         compress: $('#bjCompress').checked,
-        retention: Number($('#bjRetention').value) || 5,
+        retention: Number($('#bjRetention').value || 5),
         retentionDays: Number($('#bjRetDays').value) || 0,
         maxPerMonth: Number($('#bjMaxMonth').value) || 0,
         enabled: $('#bjEnabled').value === '1',

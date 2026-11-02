@@ -98,7 +98,9 @@ RESPALDOS A DISCO EXTERNO
 - Frecuencia: manual, diaria, semanal, cada N horas o por ventana.
 - Ventana: días de la semana, desde/hasta qué hora y cada cuántas horas.
 - Límite: máximo de copias por mes (0 = sin límite).
-- Retención: cuántas copias conservar y/o cuántos días (0 = sin límite).
+- Retención: copias a conservar (0 = sin límite) y días (31 = un mes).
+- Renovación mensual: Copias = 0 y Días = 31. Se generan todas y se
+  borra la más antigua al cumplir 31 días.
 - "Ejecutar ahora" lanza el respaldo en segundo plano.
 - "Aplicar reglas al sistema" registra la tarea en el Programador de
   tareas de Windows, así corre aunque el panel esté cerrado.

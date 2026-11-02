@@ -459,7 +459,12 @@ function normalizeJob(input, existing) {
     projects: { mode: prjMode, list: prjList },
     excludeDeps: input.excludeDeps !== false,
     compress: input.compress !== false,
-    retention: Math.min(60, Math.max(1, Number(input.retention) || 5)),
+    retention: (() => {
+      const raw = input.retention;
+      if (raw === undefined || raw === null || raw === '') return existing?.retention ?? 5;
+      const n = Number(raw);
+      return Number.isFinite(n) ? Math.min(1000, Math.max(0, n)) : (existing?.retention ?? 5);
+    })(),
     retentionDays,
     maxPerMonth,
     enabled: input.enabled !== false,
@@ -961,7 +966,7 @@ async function runJob(jobId, opts = {}) {
 
     // Retención: solo dentro de la carpeta de esta tarea y solo si la copia salió bien.
     if (ok) {
-      const keep = Math.max(1, Number(job.retention) || 5);
+      const keep = Math.max(0, Number(job.retention) || 0);
       const maxAge = Number(job.retentionDays) > 0
         ? Date.now() - Number(job.retentionDays) * 86400 * 1000
         : 0;
@@ -975,7 +980,9 @@ async function runJob(jobId, opts = {}) {
         }
       }
       const remaining = all.filter(name => !remove.has(name));
-      remaining.slice(0, Math.max(0, remaining.length - keep)).forEach(name => remove.add(name));
+      if (keep > 0) {
+        remaining.slice(0, Math.max(0, remaining.length - keep)).forEach(name => remove.add(name));
+      }
       for (const old of all.filter(name => remove.has(name))) {
         log(`Retención: eliminando copia antigua ${old}`);
         try { fs.rmSync(path.join(root, old), { recursive: true, force: true }); } catch (e) { log(`  ERROR al borrar: ${e.message}`); }
