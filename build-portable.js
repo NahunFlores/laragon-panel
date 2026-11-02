@@ -66,7 +66,7 @@ delete config.mysqlPort;
 fs.writeFileSync(path.join(OUT, 'panel.config.json'), JSON.stringify(config, null, 2), 'utf8');
 fs.mkdirSync(path.join(OUT, 'data'), { recursive: true });
 
-for (const file of ['LEEME.txt', 'README.md', 'INSTALACION_LARAGON_PANEL.xlsx']) {
+for (const file of ['LEEME.txt', 'README.md', 'INSTALACION_LARAGON_PANEL.xlsx', 'actualizar.ps1', 'actualizar.bat', 'VERSION']) {
   if (fs.existsSync(path.join(ROOT, file))) {
     fs.copyFileSync(path.join(ROOT, file), path.join(OUT, file));
   }

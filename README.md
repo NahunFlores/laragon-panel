@@ -1,6 +1,6 @@
 # Laragon Panel
 
-Panel de control privado para **Laragon** en Windows. Sustituye la interfaz de Laragon por un panel web y una app de escritorio con servicios, proyectos, PHP, bases de datos, métricas y respaldos comprimidos por proyecto.
+Panel de control para **Laragon** en Windows. Sustituye la interfaz de Laragon por un panel web y una app de escritorio con servicios, proyectos, PHP, bases de datos, métricas y respaldos comprimidos por proyecto.
 
 > Este repositorio contiene **solo el panel**. No incluye Laragon, Apache, MySQL, PHP, proyectos, bases de datos ni dumps.
 
@@ -104,6 +104,33 @@ También se crea `dist\LaragonPanel-portable.zip` (sin `data`).
 El acceso directo se actualiza solo si mueves la carpeta. Se ejecuta **al iniciar sesión** en Windows. Si el servidor arranca sin iniciar sesión, necesitas auto-login o ejecutar el panel como servicio (sin icono de bandeja).
 
 Para actualizar el panel en el servidor, reemplaza `resources\panel`, `resources\app` y `LaragonPanel.exe`; conserva `panel.config.json` y `data\`.
+
+## Actualizaciones
+
+Repositorio y releases públicas:
+
+- Código: https://github.com/NahunFlores/laragon-panel
+- Última versión: https://github.com/NahunFlores/laragon-panel/releases/latest
+- ZIP portable: `LaragonPanel-portable.zip` en la release
+
+### Actualizar desde la propia carpeta
+
+En la carpeta portable ejecuta:
+
+```bat
+actualizar.bat
+```
+
+El script:
+
+1. Consulta la última release.
+2. Descarga el ZIP.
+3. Cierra el panel.
+4. Reemplaza `LaragonPanel.exe` y `resources`.
+5. Conserva `panel.config.json` y `data`.
+6. Vuelve a iniciar el panel.
+
+También puedes descargar el ZIP manualmente y reemplazar la carpeta conservando `panel.config.json` y `data`.
 
 ## Configuración
 
@@ -322,6 +349,32 @@ Cambia `panelPort` en `panel.config.json` o cierra el proceso que usa 9090:
 Get-NetTCPConnection -State Listen -LocalPort 9090
 ```
 
+**Apache se detiene al reiniciar**  
+Si Apache está instalado como servicio, el panel ya usa el servicio al pulsar Reiniciar
+(en Dashboard y en Windows). Si el problema ocurre al **reiniciar Windows**, revisa:
+
+```powershell
+sc.exe qc LaragonApache
+sc.exe queryex LaragonApache
+netstat -ano | findstr ":80"
+Get-Service W3SVC,W3SVC-WS,MsDepSvc -ErrorAction SilentlyContinue
+Get-Content C:\laragon\bin\apache\*\logs\error.log -Tail 80
+Get-Content C:\laragon\tmp\logs\apache-service-error.log -Tail 80
+```
+
+- Si el puerto 80 lo ocupa otro servicio (IIS, `http.sys`, otro Apache), Apache no puede arrancar.
+- Comprueba que `LaragonApache` sea `AUTO_START` y tenga dependencia de red:
+
+```powershell
+sc.exe config LaragonApache start= auto
+sc.exe config LaragonApache depend= Tcpip/Afd
+sc.exe failure LaragonApache reset= 86400 actions= restart/5000/restart/10000/restart/30000
+nssm set LaragonApache AppRestartDelay 5000
+nssm start LaragonApache
+```
+
+- Revisa que Laragon no esté arrancando Apache como proceso al inicio (`RunAtStartup=0` en `usr\laragon.ini`).
+
 **MySQL no vuelve después de reiniciar**  
 El panel espera a que terminen el proceso padre y el hijo de `mysqld` antes de arrancar de nuevo. Si persiste, revisa `data\mysql-8\*.err`.
 
@@ -363,6 +416,8 @@ backup.js                 motor de respaldos y tareas de Windows
 backup-runner.js          ejecutor sin interfaz (Programador de tareas)
 winservices.js            servicios Windows con NSSM y colas Laravel
 build-portable.js         genera dist\LaragonPanel\LaragonPanel.exe portable
+actualizar.ps1/.bat       descarga e instala la última release
+VERSION                   versión actual
 public/                   interfaz web
 electron-app/             app de escritorio (main, preload, iconos)
 iniciar-panel.vbs/.bat    lanzadores del panel web

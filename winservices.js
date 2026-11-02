@@ -455,7 +455,7 @@ async function install(specInput) {
   const cmds = [];
   if (exists) {
     const comspec = process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe';
-    cmds.push([comspec, '/c', `"${NSSM}" stop ${spec.name} confirm & "${NSSM}" remove ${spec.name} confirm`]);
+    cmds.push([comspec, '/c', actionWrapper(spec.name, 'remove')]);
   }
   cmds.push(...nssmCommands(spec, false));
 
@@ -489,6 +489,25 @@ async function install(specInput) {
   return { ok: true, service: spec.name, steps, elevated: !admin };
 }
 
+function actionWrapper(name, act) {
+  const file = path.join(config.dataDir, `svc-${act}-${slug(name)}.cmd`);
+  const n = `"${win(NSSM)}"`;
+  const lines = ['@echo off'];
+  if (act === 'remove') {
+    lines.push(`${n} stop ${name} confirm`);
+    lines.push(`${n} remove ${name} confirm`);
+  } else if (act === 'restart') {
+    lines.push(`${n} stop ${name} confirm`);
+    lines.push(`taskkill /F /FI "SERVICES eq ${name}" >nul 2>&1`);
+    lines.push('ping -n 4 127.0.0.1 >nul');
+    lines.push(`${n} start ${name}`);
+    lines.push('ping -n 4 127.0.0.1 >nul');
+    lines.push(`sc query ${name} | find "RUNNING" >nul || ${n} start ${name}`);
+  }
+  fs.writeFileSync(file, lines.join('\r\n') + '\r\n', 'utf8');
+  return file;
+}
+
 async function action(name, act) {
   const safe = String(name || '');
   if (!/^[A-Za-z0-9_.\-]{1,64}$/.test(safe)) throw new Error('Servicio inválido');
@@ -505,11 +524,10 @@ async function action(name, act) {
     disable: [NSSM, 'set', safe, 'Start', 'SERVICE_DISABLED'],
   };
   let cmd = map[act];
-  if (act === 'remove') {
-    // Detener y quitar en una sola operación: si está detenido, "stop" puede
-    // devolver error y no debe impedir el "remove".
+  if (act === 'remove' || act === 'restart') {
     const comspec = process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe';
-    cmd = [comspec, '/c', `"${NSSM}" stop ${safe} confirm & "${NSSM}" remove ${safe} confirm`];
+    const wrapper = actionWrapper(safe, act);
+    cmd = [comspec, '/c', wrapper];
   }
   if (!cmd) throw new Error('Acción inválida');
   const admin = await isAdmin();

@@ -230,7 +230,21 @@ function withServiceLock(name, fn) {
   });
 }
 
+const WIN_SERVICE_NAMES = { apache: 'LaragonApache', mysql: 'LaragonMySQL' };
+
+async function managedWinService(name) {
+  const target = WIN_SERVICE_NAMES[name];
+  if (!target) return null;
+  const list = await winservices.listWindowsServices();
+  return list.some(s => String(s.Name || '').toLowerCase() === target.toLowerCase()) ? target : null;
+}
+
 async function startService(name) {
+  const winSvc = await managedWinService(name);
+  if (winSvc) {
+    const r = await winservices.action(winSvc, 'start');
+    return { ok: r.ok, error: r.error, viaService: true, elevated: r.elevated };
+  }
   if (name === 'apache') {
     if (!apache) return { ok: false, error: 'Apache no encontrado' };
     if (await portOpen(80)) return { ok: true, already: true };
@@ -273,6 +287,11 @@ async function startService(name) {
 }
 
 async function stopService(name) {
+  const winSvc = await managedWinService(name);
+  if (winSvc) {
+    const r = await winservices.action(winSvc, 'stop');
+    return { ok: r.ok, error: r.error, viaService: true, elevated: r.elevated };
+  }
   if (name === 'apache') {
     await run('taskkill', ['/F', '/IM', 'httpd.exe']);
     for (let i = 0; i < 20 && await portOpen(80, 300); i++) await new Promise(r => setTimeout(r, 300));
@@ -1504,6 +1523,8 @@ async function handle(req, res, isLan) {
         if (action === 'start') return startService(name);
         if (action === 'stop') return stopService(name);
         if (action === 'restart') {
+          const winSvc = await managedWinService(name);
+          if (winSvc) return winservices.action(winSvc, 'restart');
           await stopService(name);
           await sleep(1500);
           return startService(name);

@@ -17,6 +17,12 @@ INICIAR
   %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Laragon Panel.lnk
   (se puede desactivar desde Ajustes o el menú de la bandeja).
 
+ACTUALIZAR
+----------
+- En la carpeta portable: ejecutar actualizar.bat.
+- Descarga la última release y conserva panel.config.json y data.
+- Releases: https://github.com/NahunFlores/laragon-panel/releases/latest
+
 APP DE ESCRITORIO (Windows / Electron)
 ---------------------------------------
 - Arranca en segundo plano si se inicia con Windows.
