@@ -22,6 +22,7 @@ Panel de control para **Laragon** en Windows. Sustituye la interfaz de Laragon p
 - **App Electron**: bandeja, notificaciones, inicio con Windows e instancia única.
 - **LAN**: panel por IP con clave y proyectos por `IP:PUERTO`.
 - **SQL Server**: compatible con `sqlsrv`/`pdo_sqlsrv` si las DLL están instaladas en PHP.
+- **Diagnóstico de versiones**: compara PHP en `laragon.ini`, PHP configurado en Apache y la última versión PHP registrada al iniciar Apache; advierte diferencias y componentes bajo la política de seguridad.
 
 ## Requisitos
 
@@ -34,16 +35,18 @@ Panel de control para **Laragon** en Windows. Sustituye la interfaz de Laragon p
 
 ## Instalación rápida en otro Laragon
 
-La forma recomendada es el instalador, que detecta Laragon, la carpeta de proyectos y PHP:
+La forma recomendada es el instalador, que detecta Laragon, la carpeta de proyectos y PHP. Primero inspecciona sin modificar archivos:
 
 ```bat
+node instalar.js --dry-run --laragon "D:\ruta\de\laragon"
 node instalar.js --laragon "D:\ruta\de\laragon"
 ```
 
 Sin `--laragon` se autodetecta (rutas típicas, `LARAGON_ROOT` y el menú de inicio).
-El instalador escribe `panel.config.json`, genera `lan-key.txt` y deja activa una
-versión de PHP **sin vulnerabilidades conocidas** (ver más abajo). Puedes ver qué haría
-antes de tocar nada con `node instalar.js --dry-run`.
+El instalador conserva overrides locales, hereda versiones y puertos desde
+`usr\laragon.ini`, verifica SHA-256 de PHP y valida Apache antes de activar el módulo.
+`--no-php` omite la gestión de PHP por completo: no cambia `php.ini`, no activa PHP y no
+reinicia Apache. Usa `--force` solo cuando quieras reemplazar conscientemente la configuración.
 
 Después, instala las dependencias de la app de escritorio si las quieres usar:
 
@@ -90,20 +93,22 @@ C:\laragon-panel\dist\LaragonPanel\
 
 También se crea `dist\LaragonPanel-portable.zip` (sin `data`).
 
+Al reconstruir sobre un `dist\LaragonPanel` existente, el build conserva `panel.config.json` y `data`. Si detecta que ese `LaragonPanel.exe` sigue ejecutándose, aborta sin reemplazarlo.
+
 ### Usarla en el servidor
 
 1. Copia la carpeta o el ZIP al servidor, por ejemplo `C:\LaragonPanel`.
 2. Edita `panel.config.json`:
    - `laragonRoot`: ruta real de Laragon.
    - `nssmPath`: ruta de NSSM.
-   - `mysqlPort` se detecta desde `usr\laragon.ini`; puedes fijarlo si quieres.
+   - Los puertos y las versiones activas se heredan de `usr\laragon.ini` por defecto; fija overrides solo si lo necesitas.
 3. Ejecuta `LaragonPanel.exe`.
 4. El primer arranque crea `data\` (clave LAN, ajustes, respaldos) y un acceso directo en **Inicio → Startup**.
 5. Abre `http://127.0.0.1:9090`.
 
 El acceso directo se actualiza solo si mueves la carpeta. Se ejecuta **al iniciar sesión** en Windows. Si el servidor arranca sin iniciar sesión, necesitas auto-login o ejecutar el panel como servicio (sin icono de bandeja).
 
-Para actualizar el panel en el servidor, reemplaza `resources\panel`, `resources\app` y `LaragonPanel.exe`; conserva `panel.config.json` y `data\`.
+Para actualizar el panel en el servidor, reemplaza `resources\panel`, `resources\app` y `LaragonPanel.exe`; conserva `panel.config.json` y `data\`. Las actualizaciones automáticas hacen un backup y restauran binarios/recursos si la sustitución falla.
 
 ## Actualizaciones
 
@@ -192,17 +197,30 @@ También puedes descargar el ZIP manualmente y reemplazar la carpeta conservando
 |---|---|---|
 | `laragonRoot` | `C:/laragon` | Carpeta raíz de Laragon. |
 | `wwwRoot` | DocumentRoot de `usr\laragon.ini` o `<laragonRoot>/www` | Carpeta de proyectos. Úsala si tu `www` vive en otro disco, por ejemplo `D:/Laragon/www`. |
-| `mysqlPort` | `3308` | Puerto TCP de MySQL. |
+| `wwwRootMode` | `auto` | `auto` hereda DocumentRoot de Laragon; `fixed` usa `wwwRoot`. |
+| `mysqlPort` | Puerto de `usr\laragon.ini` o `3308` | Puerto TCP de MySQL. Solo se usa como override en modo `fixed`. |
+| `mysqlPortMode` | `auto` | `auto` hereda el puerto de Laragon; `fixed` usa `mysqlPort`. |
+| `apachePort` | Puerto de `usr\laragon.ini` o `80` | Puerto TCP de Apache. Solo se usa como override en modo `fixed`. |
+| `apachePortMode` | `auto` | `auto` hereda el puerto de Laragon; `fixed` usa `apachePort`. |
 | `panelPort` | `9090` | Panel local (solo `127.0.0.1`). |
 | `lanPort` | `9091` | Panel para la red local. |
 | `codePath` | vacío | Ruta a `code.cmd` de VS Code. Si está vacío se autodetecta. |
 | `wtPath` | vacío | Ruta a `wt.exe` de Windows Terminal. Si está vacío se autodetecta. |
-| `nssmPath` | `C:/laragon/nssm-2.24/win64/nssm.exe` | Ejecutable de NSSM para los servicios Windows. |
+| `nssmPath` | `<laragonRoot>/nssm-2.24/win64/nssm.exe` | Ejecutable de NSSM para los servicios Windows. |
 | `redisPath` | vacío | `redis-server.exe`; si está vacío se busca en `bin\redis`. |
 | `phpPath` | vacío | `php.exe` para colas Laravel; si está vacío usa el PHP activo de `usr\laragon.ini`. |
 | `legacyDumps` | vacío | Carpeta antigua de dumps, opcional. |
 
-Variables equivalentes: `LARAGON_ROOT`, `LARAGON_WWW`, `MYSQL_PORT`, `PANEL_PORT`, `PANEL_LAN_PORT`, `VSCODE_PATH`, `WT_PATH`, `NSSM_PATH`, `REDIS_PATH`, `PHP_PATH`, `LEGACY_BACKUP`.
+Variables equivalentes: `LARAGON_ROOT`, `LARAGON_WWW`, `MYSQL_PORT`, `APACHE_PORT`, `PANEL_PORT`, `PANEL_LAN_PORT`, `VSCODE_PATH`, `WT_PATH`, `NSSM_PATH`, `REDIS_PATH`, `REDIS_PORT`, `PHP_PATH`, `LEGACY_BACKUP`.
+
+Compatibilidad con configuraciones antiguas: los overrides existentes se conservan. Si un `mysqlPort` antiguo fue generado automáticamente y ahora debe seguir `laragon.ini`, agrega `"mysqlPortMode": "auto"`; si es un override intencional, usa `"fixed"`. El mismo esquema aplica a `wwwRoot` y `apachePort`.
+
+### Herencia y compatibilidad de versiones
+
+- Apache, MySQL y PHP se eligen desde las versiones de `usr\laragon.ini`; las carpetas de versiones se comparan numéricamente. Si Laragon cambia mientras el servicio está corriendo, el panel continúa controlando la versión que ya está ejecutándose y avisa que debe detenerse para aplicar la selección nueva.
+- Redis se detecta desde `REDIS_PATH` o en `bin\redis`. La versión del ejecutable se incluye en el diagnóstico.
+- `stack-policy.json` versionado documenta arquitectura/SAPI requeridas, soporte PHP y enlaces a avisos. Es una **política de compatibilidad**, no un lock de las versiones instaladas y no hace upgrades automáticos de Apache/MySQL.
+- La pantalla principal muestra los valores de `laragon.ini`, `mod_php.conf` y el último arranque registrado por Apache para ayudar a detectar drift.
 
 ## Servicios de Windows (NSSM)
 
@@ -214,6 +232,10 @@ La vista **Windows** permite convertir procesos en servicios reales de Windows:
 - Buscar servicios existentes y **adoptarlos** para controlarlos desde el panel.
 - Ver estado real, iniciar, detener, reiniciar, cambiar auto-inicio y quitar.
 - Logs de salida y error por servicio.
+
+Si `usr\laragon.ini` cambia a otra versión mientras un servicio Windows permanece instalado, el panel compara el ejecutable instalado con el seleccionado por Laragon y ofrece **Reconfigurar servicio**. El cambio requiere sobrescribir el servicio existente y aprobación UAC.
+
+Redis OSS no publica un servidor nativo mantenido para Windows; la documentación de Redis recomienda Memurai o WSL. Comprueba el origen y mantenimiento del paquete Redis que agregues a Laragon.
 
 ### Instalar NSSM
 
@@ -257,7 +279,8 @@ C:\laragon\
   bin\apache\...\conf\extra\httpd-vhosts.conf
 ```
 
-El panel usa la versión de Apache y MySQL indicada en `usr\laragon.ini` y, si no existe, la carpeta más reciente. Para PHP usa la versión activa de `usr\laragon.ini` o la que se seleccione en la vista PHP.
+El panel usa la versión de Apache y MySQL indicada en `usr\laragon.ini` y, si no existe o ya no es válida, usa el fallback numérico más alto. Para PHP usa la versión activa de `usr\laragon.ini` o la que se seleccione en la vista PHP.
+Las tareas de respaldo y los servicios Windows emplean la misma selección, en lugar de elegir independientemente otra versión.
 
 ### Proyectos y puertos
 
@@ -351,12 +374,12 @@ El instalador busca siempre una versión de PHP parcheada contra `CVE-2026-10961
 | 8.4 | 8.4.27 |
 | 8.5 | 8.5.12 |
 
-- Si ya hay una instalada, la activa (debe ser x64 **ZTS** con `php8apache2_4.dll`).
-- Si no hay ninguna, descarga el último build x64 ZTS de `windows.php.net`, lo instala en `bin\php`,
-  copia `php.ini` y las extensiones de la versión anterior (`sqlsrv`, `pdo_sqlsrv`, `redis`) y lo deja activo.
+- Si ya hay una instalada, solo la activa si cumple `stack-policy.json`, sigue en soporte y es x64 **ZTS** con `php8apache2_4.dll`.
+- Si no hay ninguna, descarga un build x64 ZTS de `windows.php.net`, verifica su SHA-256, extrae a una carpeta temporal y prueba `php.exe -v` antes de instalarlo.
+- Copia `php.ini` y DLL extra solo si corresponden a la misma rama PHP. Si no hay configuración de referencia, usa `php.ini-development`. La activación valida `httpd -t`; si falla, restaura los dos archivos de selección (`mod_php.conf` y `laragon.ini`).
 - `node instalar.js --check-php` muestra los builds disponibles y cuáles están parcheados.
 
-El panel muestra la versión activa en **PHP** y el instalador marca en el resumen cuáles quedaron vulnerables.
+El panel muestra versiones completas, TS/NTS, arquitectura, compilador y diferencia de selección entre Laragon y Apache. Los mínimos de un aviso específico no convierten una rama EOL en segura; por ejemplo, PHP 8.1 ya terminó soporte.
 
 ## App de escritorio
 
@@ -431,7 +454,7 @@ nssm start LaragonApache
 - Revisa que Laragon no esté arrancando Apache como proceso al inicio (`RunAtStartup=0` en `usr\laragon.ini`).
 
 **MySQL no vuelve después de reiniciar**  
-El panel espera a que terminen el proceso padre y el hijo de `mysqld` antes de arrancar de nuevo. Si persiste, revisa `data\mysql-8\*.err`.
+El panel espera hasta 120 s a que MySQL abra su puerto y **no** lanza otra instancia ni mata `mysqld.exe` globalmente. Si sigue inicializando o falla, revisa el `.err` de la versión seleccionada en `data` y consulta el estado antes de reintentar.
 
 **Las tareas de Windows no aparecen**  
 
@@ -444,6 +467,7 @@ Revisa el vhost, que Apache esté escuchando y las reglas de firewall.
 
 **PHP no carga en Apache**  
 La versión debe ser x64 ZTS e incluir `php8apache2_4.dll`. Revisa `etc\apache2\mod_php.conf`.
+En Dashboard → **Versiones del entorno**, compara `laragon.ini`, `mod_php.conf` y el último PHP del log Apache. El panel mantiene la versión que ya está ejecutándose hasta detener el servicio.
 
 **No hay ZIP en los respaldos**  
 Comprueba que `C:\Windows\System32\tar.exe` exista; si no, usa el modo sin comprimir.
@@ -465,6 +489,8 @@ Desmarca “Solo colas configuradas” para ver todos los proyectos Laravel dete
 ```
 server.js                 API y servidor web
 config.js                 configuración (panel.config.json / variables de entorno)
+laragon-stack.js          selección numérica de versiones/herencia desde laragon.ini
+stack-policy.json         política versionada de compatibilidad y avisos
 instalar.js               instalador: detecta Laragon, escribe config y deja PHP parcheado
 AGENTS.md                 reglas para el agente (instalación/verificación)
 backup.js                 motor de respaldos y tareas de Windows
@@ -475,6 +501,7 @@ actualizar.ps1/.bat       descarga e instala la última release
 VERSION                   versión actual
 public/                   interfaz web
 electron-app/             app de escritorio (main, preload, iconos)
+tests/                    pruebas de herencia y selección de versiones
 iniciar-panel.vbs/.bat    lanzadores del panel web
 panel.config.example.json plantilla de configuración
 INSTALACION_LARAGON_PANEL.xlsx  checklist de instalación y verificación

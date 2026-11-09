@@ -9,6 +9,7 @@ Nunca copies `panel.config.json` a mano ni edites `httpd-vhosts.conf` al azar.
 Usa siempre el instalador:
 
 ```bash
+node instalar.js --dry-run --laragon "<ruta de Laragon>"
 node instalar.js --laragon "<ruta de Laragon>"
 ```
 
@@ -25,22 +26,23 @@ Opciones útiles:
 | `--force` | Reescribe `panel.config.json` aunque exista. |
 | `--no-electron` / `--no-php` | Omite la app de escritorio / la gestión de PHP. |
 
-### Regla obligatoria: PHP sin vulnerabilidades
+### Política de versiones y PHP
 
-El instalador **siempre** busca una versión de PHP sin fallos conocidos
-(advisory `CVE-2026-109618` / `CVE-2026-109619`, "php2shell"), mínimo por rama:
+La fuente versionada de la política es `stack-policy.json`; no dupliques mínimos en README, UI o instalador.
+El instalador considera los mínimos de PHP contra los avisos registrados y no activa ramas fuera de soporte.
+`--no-php` debe omitir totalmente cambios de PHP/Apache. Los builds aceptables para Apache son x64,
+Thread Safe (ZTS) y contienen `php8apache2_4.dll`.
 
-`8.1.34`, `8.2.35`, `8.3.36`, `8.4.27`, `8.5.12`
+Los binarios descargados deben verificarse contra `sha256sum.txt` oficial antes de extraerlos.
+Extrae primero a una carpeta temporal, ejecuta `php.exe -v`, y solo después mueve a `bin/php`.
+Antes de activar, valida `httpd -t`; si la activación/reinicio falla, restaura ambos archivos de selección PHP.
 
 Comportamiento esperado:
 
-1. Lista los PHP instalados y marca cuáles son vulnerables.
-2. Si hay uno parcheado, x64 **ZTS** y con `php8apache2_4.dll`, lo activa
-   (`etc/apache2/mod_php.conf` + `[php] Version` en `usr/laragon.ini`) y reinicia Apache si está corriendo.
-3. Si ninguno sirve, descarga el último build parcheado x64 ZTS desde
-   `windows.php.net`, lo extrae en `bin/php`, copia `php.ini` y las extensiones
-   (`sqlsrv`, `pdo_sqlsrv`, `redis`) de la versión anterior y lo deja activo.
-4. Si no hay red o el build no trae `php8ts.dll`, deja un aviso claro y no rompe nada.
+1. `laragon.ini` es la fuente de selección de Apache, PHP, MySQL y sus puertos si el modo local es `auto`.
+2. `stack-policy.json` contiene los mínimos/requisitos; una rama EOL no se etiqueta como segura solo por pasar un CVE específico.
+3. PHP debe estar simultáneamente configurado en `mod_php.conf` y `[php] Version`; el panel debe detectar e informar el drift.
+4. Si no hay red/checksum/build compatible, deja el entorno intacto y un aviso claro.
 
 Si el agente detecta PHP vulnerable tras instalar, debe avisar y volver a ejecutar
 `node instalar.js --laragon "<ruta>"` (sin `--no-php`).
@@ -50,9 +52,13 @@ Si el agente detecta PHP vulnerable tras instalar, debe avisar y volver a ejecut
 ```bash
 node --check server.js
 node --check instalar.js
-node instalar.js --check-php            # confirma que hay build parcheado
-node server.js                          # o la app Electron
+node --check laragon-stack.js
+node --test tests/laragon-stack.test.js
+node instalar.js --dry-run --laragon "<ruta>"
 ```
+
+No arranques `server.js` solo para probar en una Laragon existente: al iniciar puede arrancar
+las apps Node de `www`. Usa `--dry-run`, pruebas unitarias y validaciones de configuración.
 
 Con el panel arriba (`http://127.0.0.1:9090`), comprobar:
 
@@ -66,6 +72,9 @@ Con el panel arriba (`http://127.0.0.1:9090`), comprobar:
 
 - No borrar ni reescribir `panel.config.json`, `lan-key.txt`, `backups.json`, `backups/`, `previews/` de una instalación existente.
 - No editar `conf/extra/httpd-vhosts.conf` a mano: los sitios se crean desde el panel (`POST /api/site`), que agrega el vhost y la línea de `puertos.csv`.
+- No terminar `httpd.exe` ni `mysqld.exe` por nombre global. Cierre ordenado, PID/proceso propio y rollback; nunca iniciar una segunda instancia de MySQL mientras otra inicializa.
+- No reconstruir directamente encima de una app portable en ejecución. El build debe preservar `data` y `panel.config.json`, y abortar si el exe está activo.
+- Los cambios de vhost/puertos se validan con `httpd -t` antes de reiniciar; ante fallo, restaurar los archivos anteriores.
 - Los respaldos solo se administran desde el equipo local (`/api/backup*` responde 403 por LAN).
 - No exponer el panel LAN a Internet sin HTTPS. La clave vive en `lan-key.txt`.
 - Trabajar la configuración solo con `node instalar.js`; si un valor debe cambiar, usar `--force` conscientemente.

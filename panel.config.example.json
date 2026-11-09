@@ -1,12 +1,14 @@
 {
   "laragonRoot": "C:/laragon",
   "wwwRoot": "C:/laragon/www",
-  "mysqlPort": 3308,
+  "wwwRootMode": "auto",
+  "mysqlPortMode": "auto",
+  "apachePortMode": "auto",
   "panelPort": 9090,
   "lanPort": 9091,
   "codePath": "",
   "wtPath": "",
-  "nssmPath": "C:/laragon/nssm-2.24/win64/nssm.exe",
+  "nssmPath": "",
   "redisPath": "",
   "phpPath": "",
   "legacyDumps": ""

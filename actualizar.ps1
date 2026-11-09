@@ -42,6 +42,23 @@ function New-AppBackup {
   return $backup
 }
 
+function Restore-AppBackup($backup) {
+  if (-not $backup -or -not (Test-Path $backup)) { return }
+  Write-Host 'Restaurando la versión anterior desde el backup...'
+  $oldExe = Join-Path $backup 'LaragonPanel.exe'
+  if (Test-Path $oldExe) { Copy-Item $oldExe $appDir -Force }
+  $oldResources = Join-Path $backup 'resources'
+  if (Test-Path $oldResources) {
+    $currentResources = Join-Path $appDir 'resources'
+    if (Test-Path $currentResources) { Remove-Item $currentResources -Recurse -Force }
+    Copy-Item $oldResources $currentResources -Recurse -Force
+  }
+  foreach ($file in @('panel.config.json', 'actualizar.ps1', 'actualizar.bat', 'VERSION', 'LEEME.txt', 'README.md', 'INSTALACION_LARAGON_PANEL.xlsx')) {
+    $oldFile = Join-Path $backup $file
+    if (Test-Path $oldFile) { Copy-Item $oldFile (Join-Path $appDir $file) -Force }
+  }
+}
+
 if ($BackupOnly) {
   New-AppBackup | Out-Null
   exit 0
@@ -70,6 +87,8 @@ $tmp = Join-Path $env:TEMP ('LaragonPanelUpdate_' + [guid]::NewGuid().ToString('
 $zip = Join-Path $tmp 'update.zip'
 $newDir = Join-Path $tmp 'new'
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+$backup = $null
+$updateStarted = $false
 
 try {
   Write-Host "Descargando $($release.tag_name) ($([math]::Round($asset.size / 1MB, 1)) MB)..."
@@ -98,6 +117,7 @@ try {
   Start-Sleep -Seconds 2
 
   Write-Host 'Reemplazando archivos...'
+  $updateStarted = $true
   Copy-Item (Join-Path $newDir 'LaragonPanel.exe') $appDir -Force
 
   if ($Full) {
@@ -161,6 +181,10 @@ try {
 } catch {
   Write-Host "ERROR: $($_.Exception.Message)"
   Write-Host "Backup (si se creó): $backup"
+  if ($updateStarted -and $backup) {
+    try { Restore-AppBackup $backup }
+    catch { Write-Host "WARN: automatic restore failed: $($_.Exception.Message)" }
+  }
   if (Test-Path $exe) {
     try { Start-Process -FilePath $exe -ArgumentList '--hidden' -WorkingDirectory $appDir } catch {}
   }
