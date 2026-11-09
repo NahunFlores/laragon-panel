@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "checkedOn": "2026-11-08",
+  "components": {
+    "php": {
+      "mode": "apache-mod_php",
+      "required": {
+        "architecture": "x64",
+        "threadSafety": "TS",
+        "module": "php8apache2_4.dll"
+      },
+      "minimumPatched": {
+        "8.1": "8.1.34",
+        "8.2": "8.2.35",
+        "8.3": "8.3.36",
+        "8.4": "8.4.27",
+        "8.5": "8.5.12"
+      },
+      "supportEnds": {
+        "8.1": "2025-12-31",
+        "8.2": "2026-12-31",
+        "8.3": "2027-12-31",
+        "8.4": "2028-12-31",
+        "8.5": "2029-12-31"
+      },
+      "releaseIndex": "https://windows.php.net/downloads/releases/",
+      "securityAdvisories": "https://www.php.net/security/"
+    },
+    "apache": {
+      "minimumRecommended": "2.4.69",
+      "securityAdvisories": "https://httpd.apache.org/security/vulnerabilities_24.html"
+    },
+    "mysql": {
+      "versionSource": "usr/laragon.ini [mysql] Version",
+      "portSource": "usr/laragon.ini [mysql] Port"
+    },
+    "redis": {
+      "versionSource": "bin/redis/redis-server.exe",
+      "windowsGuidance": "Use Memurai or Redis under WSL for maintained Windows deployments.",
+      "documentation": "https://redis.io/docs/latest/operate/oss_and_stack/install/archive/install-redis/install-redis-on-windows/"
+    }
+  }
+}

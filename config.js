@@ -14,6 +14,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const laragonStack = require('./laragon-stack');
 
 const FILE = process.env.PANEL_CONFIG
   ? path.resolve(process.env.PANEL_CONFIG)
@@ -43,45 +44,64 @@ function normalize(value) {
   return resolved.replace(/\\/g, '/').replace(/\/+$/, '');
 }
 
-// DocumentRoot de usr\laragon.ini: permite que los proyectos vivan fuera de <laragon>\www.
-function iniDocumentRoot(root) {
-  try {
-    const ini = fs.readFileSync(path.join(root, 'usr', 'laragon.ini'), 'utf8');
-    const m = ini.match(/^\s*DocumentRoot\s*=\s*(.+)$/im);
-    return m ? m[1].trim() : '';
-  } catch {
-    return '';
-  }
-}
-
-// Puerto de MySQL declarado en usr\laragon.ini (3306 en una instalación estándar).
-function iniMysqlPort(root) {
-  try {
-    const ini = fs.readFileSync(path.join(root, 'usr', 'laragon.ini'), 'utf8');
-    const section = ini.match(/^\s*\[mysql\][\s\S]*?(?=^\s*\[|\s*$)/im);
-    const text = section ? section[0] : ini;
-    const m = text.match(/^\s*Port\s*=\s*(\d+)/im);
-    return m ? Number(m[1]) : 0;
-  } catch {
-    return 0;
-  }
-}
-
 const root = laragonRoot(process.env.LARAGON_ROOT || file.laragonRoot);
-const www = process.env.LARAGON_WWW || file.wwwRoot || iniDocumentRoot(root) || path.join(root, 'www');
+const fileRoot = laragonRoot(file.laragonRoot || root);
+const legacyWww = file.wwwRoot
+  ? (path.isAbsolute(String(file.wwwRoot)) ? normalize(file.wwwRoot) : normalize(path.join(fileRoot, String(file.wwwRoot))))
+  : '';
+const inheritWww = file.wwwRootMode === 'auto'
+  || (!file.wwwRootMode && (!legacyWww || legacyWww.toLowerCase() === normalize(path.join(fileRoot, 'www')).toLowerCase()));
+const inheritMysqlPort = file.mysqlPortMode === 'auto' || (!file.mysqlPortMode && file.mysqlPort === undefined);
+const inheritApachePort = file.apachePortMode === 'auto' || (!file.apachePortMode && file.apachePort === undefined);
+const bundledDefaultNssm = String(file.nssmPath || '').replace(/\\/g, '/').toLowerCase();
+const defaultNssm = path.join(root, 'nssm-2.24', 'win64', 'nssm.exe');
+const nssmPath = bundledDefaultNssm === 'c:/laragon/nssm-2.24/win64/nssm.exe' && root.toLowerCase() !== 'c:/laragon'
+  ? defaultNssm
+  : (process.env.NSSM_PATH || file.nssmPath || defaultNssm);
+
+function getWwwRoot() {
+  const www = process.env.LARAGON_WWW
+    || (inheritWww ? '' : file.wwwRoot)
+    || laragonStack.readIniValue(root, 'apache', 'DocumentRoot')
+    || laragonStack.readIniValue(root, 'preferences', 'DocumentRoot')
+    || path.join(root, 'www');
+  return path.isAbsolute(String(www)) ? normalize(www) : normalize(path.join(root, String(www)));
+}
+
+function getMysqlPort() {
+  const override = process.env.MYSQL_PORT || (inheritMysqlPort ? '' : file.mysqlPort);
+  const iniPort = Number(laragonStack.readIniValue(root, 'mysql', 'Port')) || 0;
+  return number(override, iniPort || 3308);
+}
+
+function getApachePort() {
+  const override = process.env.APACHE_PORT || (inheritApachePort ? '' : file.apachePort);
+  const iniPort = Number(laragonStack.readIniValue(root, 'apache', 'Port')) || 0;
+  return number(override, iniPort || 80);
+}
+
+function getRedisPort() {
+  return number(process.env.REDIS_PORT, laragonStack.redisPort(root, process.env.REDIS_PATH || file.redisPath || ''));
+}
 
 module.exports = {
   laragonRoot: root,
-  wwwRoot: normalize(www),
-  mysqlPort: number(process.env.MYSQL_PORT || file.mysqlPort, iniMysqlPort(root) || 3308),
+  wwwRoot: getWwwRoot(),
+  mysqlPort: getMysqlPort(),
+  apachePort: getApachePort(),
+  redisPort: getRedisPort(),
   panelPort: number(process.env.PANEL_PORT || file.panelPort, 9090),
   lanPort: number(process.env.PANEL_LAN_PORT || file.lanPort, 9091),
   codePath: String(process.env.VSCODE_PATH || file.codePath || '').trim(),
   wtPath: String(process.env.WT_PATH || file.wtPath || '').trim(),
-  nssmPath: String(process.env.NSSM_PATH || file.nssmPath || 'C:/laragon/nssm-2.24/win64/nssm.exe').trim(),
+  nssmPath: String(nssmPath).trim(),
   redisPath: String(process.env.REDIS_PATH || file.redisPath || '').trim(),
   phpPath: String(process.env.PHP_PATH || file.phpPath || '').trim(),
   legacyDumps: String(process.env.LEGACY_BACKUP || file.legacyDumps || '').trim(),
+  getWwwRoot,
+  getMysqlPort,
+  getApachePort,
+  getRedisPort,
   configFile: FILE,
   dataDir: DATA_DIR,
 };

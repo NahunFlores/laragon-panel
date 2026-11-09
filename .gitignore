@@ -9,6 +9,7 @@ panel.config.json
 backups.json
 winservices.json
 desktop-settings.json
+node-pids.json
 *.pid
 lan-key.txt
 

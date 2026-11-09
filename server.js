@@ -10,9 +10,11 @@ const { spawn, execFile } = require('child_process');
 const backup = require('./backup');
 const winservices = require('./winservices');
 const config = require('./config');
+const laragonStack = require('./laragon-stack');
 
 const LARAGON = config.laragonRoot;
-const MYSQL_PORT = config.mysqlPort;
+let MYSQL_PORT = config.getMysqlPort();
+let APACHE_PORT = config.getApachePort();
 const PANEL_PORT = config.panelPort;
 const PANEL_LAN_PORT = config.lanPort;
 const LEGACY_DUMPS = config.legacyDumps ? path.join(config.legacyDumps, 'dumps') : null;
@@ -24,8 +26,8 @@ function getLanKey() {
     const k = fs.readFileSync(LAN_KEY_FILE, 'utf8').trim();
     if (k) return k;
   } catch {}
-  const k = crypto.randomBytes(5).toString('hex');
-  try { fs.writeFileSync(LAN_KEY_FILE, k, 'utf8'); } catch {}
+  const k = crypto.randomBytes(24).toString('hex');
+  try { atomicReplace(LAN_KEY_FILE, k); } catch {}
   return k;
 }
 
@@ -85,7 +87,7 @@ function parseCookies(header) {
   });
   return out;
 }
-const WWW = config.wwwRoot;
+let WWW = config.getWwwRoot();
 const PUBLIC = path.join(__dirname, 'public');
 
 function listDirs(dir) {
@@ -97,24 +99,12 @@ function listDirs(dir) {
 }
 
 function iniSectionValue(section, key) {
-  try {
-    const text = fs.readFileSync(path.join(LARAGON, 'usr', 'laragon.ini'), 'utf8');
-    let current = '';
-    for (const line of text.split(/\r?\n/)) {
-      const sec = line.match(/^\s*\[([^\]]+)\]/);
-      if (sec) { current = sec[1].trim().toLowerCase(); continue; }
-      if (current !== section.toLowerCase()) continue;
-      const kv = line.match(/^\s*([^=]+?)\s*=\s*(.*)$/);
-      if (kv && kv[1].trim().toLowerCase() === key.toLowerCase()) return kv[2].trim();
-    }
-  } catch {}
-  return '';
+  return laragonStack.readIniValue(LARAGON, section, key);
 }
 
 function pickVersionDir(baseDir, prefix, iniVersion) {
-  const dirs = listDirs(baseDir).filter(d => d.startsWith(prefix)).sort();
-  if (iniVersion && dirs.includes(iniVersion)) return iniVersion;
-  return dirs[dirs.length - 1];
+  const executable = prefix === 'httpd-' ? path.join('bin', 'httpd.exe') : path.join('bin', 'mysqld.exe');
+  return laragonStack.selectVersionDir(baseDir, prefix, iniVersion, executable);
 }
 
 function pickApache() {
@@ -138,35 +128,73 @@ function pickMysql() {
   };
 }
 
-const apache = pickApache();
-const mysql = pickMysql();
+let apache = pickApache();
+let mysql = pickMysql();
+let selectionWarnings = [];
+let pendingLaragonSelections = false;
+let laragonIniMtime = (() => {
+  try { return fs.statSync(path.join(LARAGON, 'usr', 'laragon.ini')).mtimeMs; } catch { return 0; }
+})();
+
+function syncActiveRuntimeEnv() {
+  if (mysql) process.env.PANEL_ACTIVE_MYSQL_VERSION = mysql.name;
+  else delete process.env.PANEL_ACTIVE_MYSQL_VERSION;
+  process.env.PANEL_ACTIVE_MYSQL_PORT = String(MYSQL_PORT);
+  process.env.PANEL_ACTIVE_WWW_ROOT = WWW;
+}
+syncActiveRuntimeEnv();
+
+async function refreshLaragonSelections() {
+  let mtime = 0;
+  try { mtime = fs.statSync(path.join(LARAGON, 'usr', 'laragon.ini')).mtimeMs; } catch {}
+  if (!mtime) return;
+  if (mtime !== laragonIniMtime) {
+    laragonIniMtime = mtime;
+    pendingLaragonSelections = true;
+  }
+  if (!pendingLaragonSelections) return;
+  const configuredApache = pickApache();
+  const configuredMysql = pickMysql();
+  const configuredApachePort = config.getApachePort();
+  const configuredMysqlPort = config.getMysqlPort();
+  const [apacheBusy, mysqlBusy] = await Promise.all([portOpen(APACHE_PORT), portOpen(MYSQL_PORT)]);
+  selectionWarnings = [];
+  let stillPending = false;
+
+  const apacheChanged = (configuredApache && configuredApache.name || '') !== (apache && apache.name || '') || configuredApachePort !== APACHE_PORT;
+  if (apacheChanged && apacheBusy) {
+    selectionWarnings.push(`Laragon cambió Apache/puerto; el proceso actual sigue usando ${apache ? apache.name : 'versión desconocida'}:${APACHE_PORT}. Detén Apache para heredar la nueva selección.`);
+    stillPending = true;
+  } else {
+    apache = configuredApache;
+    APACHE_PORT = configuredApachePort;
+  }
+
+  const mysqlChanged = (configuredMysql && configuredMysql.name || '') !== (mysql && mysql.name || '') || configuredMysqlPort !== MYSQL_PORT;
+  if (mysqlChanged && mysqlBusy) {
+    selectionWarnings.push(`Laragon cambió MySQL/puerto; el proceso actual sigue usando ${mysql ? mysql.name : 'versión desconocida'}:${MYSQL_PORT}. Detén MySQL para heredar la nueva selección.`);
+    stillPending = true;
+  } else {
+    mysql = configuredMysql;
+    MYSQL_PORT = configuredMysqlPort;
+  }
+  WWW = config.getWwwRoot();
+  pendingLaragonSelections = stillPending;
+  syncActiveRuntimeEnv();
+}
 
 try { fs.mkdirSync(path.join(LARAGON, 'backups', 'db'), { recursive: true }); } catch {}
 
 function phpVersions() {
-  const dirs = listDirs(path.join(LARAGON, 'bin', 'php')).filter(d => /^php-\d/.test(d));
-  return dirs.map(name => {
-    const m = name.match(/^php-(\d+\.\d+)\.(\d+)/);
-    const base = path.join(LARAGON, 'bin', 'php', name);
-    return {
-      folder: name,
-      short: m ? `${m[1]}.${m[2]}` : name,
-      branch: m ? m[1] : name,
-      exe: path.join(base, 'php.exe'),
-      ini: path.join(base, 'php.ini'),
-      base,
-      ts: fs.existsSync(path.join(base, 'php8ts.dll')),
-      apache: fs.existsSync(path.join(base, 'php8apache2_4.dll')),
-    };
-  }).sort((a, b) => a.short.localeCompare(b.short, undefined, { numeric: true }));
+  return laragonStack.phpVersions(LARAGON).map(item => ({ ...item, short: item.full }));
+}
+
+function activePhpFolder() {
+  return laragonStack.apachePhpFolder(LARAGON) || laragonStack.phpFolder(LARAGON);
 }
 
 function activePhp() {
-  try {
-    const conf = fs.readFileSync(path.join(LARAGON, 'etc', 'apache2', 'mod_php.conf'), 'utf8');
-    const m = conf.match(/php-(\d+\.\d+)\.(\d+)[^/\\"]*/);
-    return m ? `${m[1]}.${m[2]}` : null;
-  } catch { return null; }
+  return activePhpObj()?.full || null;
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -192,8 +220,16 @@ function run(exe, args, opts = {}) {
 }
 
 function startDetached(exe, args, cwd) {
-  const child = spawn(exe, args, { cwd, detached: true, stdio: 'ignore', windowsHide: true });
-  child.unref();
+  return new Promise(resolve => {
+    let child;
+    try { child = spawn(exe, args, { cwd, detached: true, stdio: 'ignore', windowsHide: true }); }
+    catch (error) { return resolve({ ok: false, error: error.message }); }
+    child.once('spawn', () => {
+      child.unref();
+      resolve({ ok: true, pid: child.pid });
+    });
+    child.once('error', error => resolve({ ok: false, error: error.message }));
+  });
 }
 
 async function waitPort(port, ms = 15000) {
@@ -205,11 +241,23 @@ async function waitPort(port, ms = 15000) {
   return false;
 }
 
+async function waitPortClosed(port, ms = 15000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (!(await portOpen(port, 400))) return true;
+    await sleep(400);
+  }
+  return !(await portOpen(port, 400));
+}
+
 async function serviceStatus() {
-  const [apacheUp, mysqlUp] = await Promise.all([portOpen(80), portOpen(MYSQL_PORT)]);
+  const redisPort = config.getRedisPort();
+  const [apacheUp, mysqlUp, redisUp] = await Promise.all([portOpen(APACHE_PORT), portOpen(MYSQL_PORT), portOpen(redisPort)]);
+  const stack = laragonStack.stackSnapshot(LARAGON, config.redisPath);
   return {
-    apache: { up: apacheUp, port: 80, version: apache ? apache.name.replace(/^httpd-/, '') : null },
+    apache: { up: apacheUp, port: APACHE_PORT, version: apache ? apache.name.replace(/^httpd-/, '') : null },
     mysql: { up: mysqlUp, port: MYSQL_PORT, version: mysql ? mysql.name.replace(/^mysql-/, '') : null },
+    redis: { up: redisUp, port: redisPort, version: stack.redis.selected || null },
   };
 }
 
@@ -247,41 +295,33 @@ async function startService(name) {
   }
   if (name === 'apache') {
     if (!apache) return { ok: false, error: 'Apache no encontrado' };
-    if (await portOpen(80)) return { ok: true, already: true };
-    startDetached(apache.exe, [], path.join(apache.base, 'bin'));
-    const up = await waitPort(80);
-    return { ok: up, error: up ? null : 'Apache no arrancó (revisa logs)' };
+    if (await portOpen(APACHE_PORT)) return { ok: true, already: true };
+    const launched = await startDetached(apache.exe, ['-d', apache.base], path.join(apache.base, 'bin'));
+    if (!launched.ok) return { ok: false, error: `No pude iniciar Apache: ${launched.error}` };
+    const up = await waitPort(APACHE_PORT, 30000);
+    return { ok: up, error: up ? null : `Apache no abrió el puerto ${APACHE_PORT} en 30 s; no se iniciará otra copia. Revisa el log de Apache.` };
   }
   if (name === 'mysql') {
     if (!mysql) return { ok: false, error: 'MySQL no encontrado' };
     if (await portOpen(MYSQL_PORT)) return { ok: true, already: true };
 
     if (await mysqldRunning()) {
-      // Puede ser un arranque en curso: darle hasta 20 s antes de forzar.
-      for (let i = 0; i < 40; i++) {
-        await sleep(500);
-        if (await portOpen(MYSQL_PORT, 300)) return { ok: true, already: true };
-      }
-      await run('taskkill', ['/F', '/IM', 'mysqld.exe']);
-      await sleep(1500);
+      // Otro proceso puede estar recuperando InnoDB o pertenecer a otra instancia.
+      // Esperar y reportar; nunca terminarlo ni iniciar una segunda copia por nombre global.
+      const up = await waitPort(MYSQL_PORT, 120000);
+      return up
+        ? { ok: true, already: true }
+        : { ok: false, error: 'Ya existe mysqld.exe pero no abrió el puerto configurado en 120 s. No se inició ni terminó ningún proceso; revisa su log.' };
     }
 
-    const launch = () => startDetached(mysql.exe, [`--defaults-file=${mysql.ini}`], path.join(mysql.base, 'bin'));
-    launch();
-    let up = await waitPort(MYSQL_PORT, 30000);
-    if (!up) {
-      // Recuperación lenta de InnoDB: esperar antes de lanzar un duplicado.
-      for (let i = 0; i < 20; i++) {
-        await sleep(500);
-        if (await portOpen(MYSQL_PORT, 300)) { up = true; break; }
-      }
-    }
-    if (!up) {
-      await sleep(1000);
-      launch();
-      up = await waitPort(MYSQL_PORT, 30000);
-    }
-    return { ok: up, error: up ? null : 'MySQL no arrancó (revisa logs)' };
+    const launched = await startDetached(mysql.exe, [`--defaults-file=${mysql.ini}`], path.join(mysql.base, 'bin'));
+    if (!launched.ok) return { ok: false, error: `No pude iniciar MySQL: ${launched.error}` };
+    const up = await waitPort(MYSQL_PORT, 120000);
+    if (up) return { ok: true };
+    const stillRunning = await mysqldRunning();
+    return { ok: false, error: stillRunning
+      ? 'MySQL sigue inicializando después de 120 s. No se lanzará una segunda instancia; revisa el log y consulta el estado antes de reintentar.'
+      : 'MySQL terminó antes de abrir el puerto. Revisa el log de MySQL.' };
   }
   return { ok: false, error: 'Servicio desconocido' };
 }
@@ -293,16 +333,18 @@ async function stopService(name) {
     return { ok: r.ok, error: r.error, viaService: true, elevated: r.elevated };
   }
   if (name === 'apache') {
-    await run('taskkill', ['/F', '/IM', 'httpd.exe']);
-    for (let i = 0; i < 20 && await portOpen(80, 300); i++) await new Promise(r => setTimeout(r, 300));
-    return { ok: !(await portOpen(80)) };
+    if (!apache) return { ok: false, error: 'Apache no encontrado' };
+    const r = await run(apache.exe, ['-k', 'shutdown', '-d', apache.base], { cwd: path.join(apache.base, 'bin'), timeout: 15000 });
+    if (r.code !== 0 && !(await portOpen(APACHE_PORT))) return { ok: true, already: true };
+    const stopped = await waitPortClosed(APACHE_PORT, 20000);
+    return stopped ? { ok: true } : { ok: false, error: 'Apache no confirmó el cierre ordenado; no se forzó el cierre para proteger las solicitudes activas.' };
   }
   if (name === 'mysql') {
     if (!mysql) return { ok: false, error: 'MySQL no encontrado' };
     await run(mysql.admin, ['-u', 'root', `--port=${MYSQL_PORT}`, '--protocol=TCP', 'shutdown']);
 
     // Esperar a que terminen TODOS los procesos mysqld (padre e hijo)
-    const deadline = Date.now() + 30000;
+    const deadline = Date.now() + 120000;
     while (Date.now() < deadline) {
       const running = await mysqldRunning();
       const open = await portOpen(MYSQL_PORT, 300);
@@ -310,12 +352,12 @@ async function stopService(name) {
       await sleep(500);
     }
 
-    if (await mysqldRunning()) {
-      await run('taskkill', ['/F', '/IM', 'mysqld.exe']);
-      await sleep(1500);
-    }
-    await sleep(1000);
-    return { ok: !(await mysqldRunning()) && !(await portOpen(MYSQL_PORT)) };
+    await sleep(500);
+    const stillRunning = await mysqldRunning();
+    const stillOpen = await portOpen(MYSQL_PORT);
+    return !stillRunning && !stillOpen
+      ? { ok: true }
+      : { ok: false, error: 'MySQL no confirmó el cierre en 120 s. No se forzó la terminación; revisa transacciones y el log antes de reintentar.' };
   }
   return { ok: false, error: 'Servicio desconocido' };
 }
@@ -464,21 +506,39 @@ function latestFile(dir, filter) {
 }
 
 function setIniValue(iniPath, section, key, value) {
-  let text = fs.readFileSync(iniPath, 'utf8');
-  const secRe = new RegExp(`\\[${section}\\]`, 'i');
-  if (!secRe.test(text)) { text += `\n[${section}]\n${key}=${value}\n`; }
-  else {
-    const start = text.search(secRe);
-    const rest = text.slice(start + text.match(secRe)[0].length);
-    const next = rest.search(/\n\[/);
-    const end = next === -1 ? text.length : start + text.match(secRe)[0].length + next;
-    let block = text.slice(start, end);
-    const keyRe = new RegExp(`^\\s*${key}\\s*=.*$`, 'im');
-    if (keyRe.test(block)) block = block.replace(keyRe, `${key}=${value}`);
-    else block = block.replace(/\s*$/, `\n${key}=${value}\n`);
-    text = text.slice(0, start) + block + text.slice(end);
+  return laragonStack.writeIniValue(LARAGON, section, key, value);
+}
+
+function atomicReplace(file, contents) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temp, contents);
+  try { fs.renameSync(temp, file); }
+  catch (error) {
+    try { fs.rmSync(temp, { force: true }); } catch {}
+    throw error;
   }
-  fs.writeFileSync(iniPath, text, 'utf8');
+}
+
+const NODE_PID_FILE = path.join(config.dataDir, 'node-pids.json');
+
+function readNodePidMap() {
+  try {
+    const value = JSON.parse(fs.readFileSync(NODE_PID_FILE, 'utf8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch { return {}; }
+}
+
+function nodePidKey(root) {
+  return path.resolve(root).toLowerCase();
+}
+
+function setNodePid(root, pid) {
+  const map = readNodePidMap();
+  const key = nodePidKey(root);
+  if (pid) map[key] = Number(pid);
+  else delete map[key];
+  try { atomicReplace(NODE_PID_FILE, JSON.stringify(map, null, 2)); } catch {}
 }
 
 const LOCALAPPDATA = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
@@ -487,16 +547,31 @@ const WT = config.wtPath || path.join(LOCALAPPDATA, 'Microsoft', 'WindowsApps', 
 const COMPOSER = path.join(LARAGON, 'bin', 'composer', 'composer.phar');
 
 function activePhpObj() {
-  const a = activePhp();
-  return phpVersions().find(p => p.short === a) || null;
+  const folder = activePhpFolder();
+  return phpVersions().find(p => p.folder.toLowerCase() === String(folder).toLowerCase()) || null;
 }
 
-const EXTENSIONS = ['curl','fileinfo','gd','intl','mbstring','exif','mysqli','openssl','pdo_mysql','pdo_sqlite','soap','sodium','sqlite3','xsl','zip','sqlsrv','pdo_sqlsrv','opcache'];
+const EXTENSIONS = ['curl','fileinfo','gd','intl','mbstring','exif','mysqli','openssl','pdo_mysql','pdo_sqlite','soap','sodium','sqlite3','xsl','zip','sqlsrv','pdo_sqlsrv','redis','opcache'];
 
-function extRegex(name) {
-  return name === 'opcache'
-    ? /^\s*(;)?\s*zend_extension\s*=\s*"?opcache"?/i
-    : new RegExp(`^\\s*(;)?\\s*extension\\s*=\\s*"?[^"\\r\\n]*${name}[^"\\r\\n]*"?`, 'i');
+function extensionLineMatches(line, name) {
+  const kind = name === 'opcache' ? 'zend_extension' : 'extension';
+  const match = String(line).match(/^\s*;?\s*(zend_extension|extension)\s*=\s*["']?([^"'\s;]+)["']?/i);
+  if (!match || match[1].toLowerCase() !== kind) return false;
+  let module = path.basename(match[2]).replace(/\.dll$/i, '').replace(/^php_/i, '').toLowerCase();
+  const wanted = String(name).toLowerCase();
+  return module === wanted || module.startsWith(`${wanted}_`);
+}
+
+function extensionConfigLine(php, name) {
+  if (name === 'opcache') return 'zend_extension=opcache';
+  const extDir = path.join(php.base, 'ext');
+  let files = [];
+  try { files = fs.readdirSync(extDir).filter(file => /^php_.*\.dll$/i.test(file)); } catch {}
+  const stem = name === 'sqlsrv' ? /^php_sqlsrv(?:_|\.dll)/i
+    : name === 'pdo_sqlsrv' ? /^php_pdo_sqlsrv(?:_|\.dll)/i
+      : new RegExp(`^php_${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:_|\\.dll)`, 'i');
+  const file = files.find(item => stem.test(item));
+  return file ? `extension=${file}` : '';
 }
 
 function getExtensions() {
@@ -504,8 +579,7 @@ function getExtensions() {
   if (!p || !fs.existsSync(p.ini)) return [];
   const lines = fs.readFileSync(p.ini, 'utf8').split(/\r?\n/);
   return EXTENSIONS.map(name => {
-    const re = extRegex(name);
-    const indices = lines.map((l, i) => re.test(l) ? i : -1).filter(i => i >= 0);
+    const indices = lines.map((l, i) => extensionLineMatches(l, name) ? i : -1).filter(i => i >= 0);
     const enabledIdx = indices.find(i => !/^\s*;/.test(lines[i]));
     const idx = enabledIdx !== undefined ? enabledIdx : (indices[0] ?? -1);
     return { name, enabled: enabledIdx !== undefined, line: idx >= 0 ? lines[idx].trim() : null };
@@ -513,37 +587,87 @@ function getExtensions() {
 }
 
 async function toggleExtension(name, enabled) {
+  if (selectionWarnings.some(warning => warning.startsWith('Laragon cambió Apache/puerto'))) {
+    return { ok: false, error: 'Detén Apache para aplicar la versión seleccionada en laragon.ini antes de cambiar extensiones.' };
+  }
   const p = activePhpObj();
   if (!p || !fs.existsSync(p.ini)) return { ok: false, error: 'PHP activo no encontrado' };
   if (!EXTENSIONS.includes(name)) return { ok: false, error: 'Extensión no permitida' };
   const lines = fs.readFileSync(p.ini, 'utf8').split(/\r?\n/);
-  const re = extRegex(name);
-  const indices = lines.map((l, i) => re.test(l) ? i : -1).filter(i => i >= 0);
-  let idx = indices.find(i => !/^\s*;/.test(lines[i]));
-  if (idx === undefined) idx = indices[0] ?? -1;
-  if (idx === -1) {
-    lines.push(name === 'opcache' ? 'zend_extension=opcache' : `extension=${name}`);
+  const indices = lines.map((l, i) => extensionLineMatches(l, name) ? i : -1).filter(i => i >= 0);
+  const activeIndex = indices.find(i => !/^\s*;/.test(lines[i]));
+  if (!enabled && activeIndex === undefined) return { ok: true, unchanged: true, extensions: getExtensions() };
+  if (enabled && activeIndex !== undefined) return { ok: true, unchanged: true, extensions: getExtensions() };
+  if (enabled && activeIndex === undefined && indices.length === 0) {
+    const declaration = extensionConfigLine(p, name);
+    if (!declaration) return { ok: false, error: `No existe una DLL compatible para ${name} en PHP ${p.full}; no se modificó php.ini.` };
+    lines.push(declaration);
+  } else if (enabled) {
+    let activated = false;
+    for (const i of indices) {
+      if (!/^\s*;/.test(lines[i]) && !activated) { activated = true; continue; }
+      lines[i] = `;${lines[i].replace(/^\s*;\s*/, '')}`;
+    }
+    if (!activated && indices.length) lines[indices[0]] = lines[indices[0]].replace(/^\s*;\s*/, '');
   } else {
-    let line = lines[idx];
-    if (enabled) line = line.replace(/^\s*;\s*/, '');
-    else if (!/^\s*;/.test(line)) line = ';' + line;
-    lines[idx] = line;
+    for (const i of indices) if (!/^\s*;/.test(lines[i])) lines[i] = `;${lines[i]}`;
   }
-  fs.writeFileSync(p.ini, lines.join('\r\n'), 'utf8');
-  if (await portOpen(80)) { await stopService('apache'); await startService('apache'); }
+
+  const oldIni = fs.readFileSync(p.ini);
+  const wasUp = await portOpen(APACHE_PORT);
+  atomicReplace(p.ini, lines.join('\r\n'));
+  try {
+    if (apache) {
+      const validation = await run(apache.exe, ['-t', '-d', apache.base], { cwd: path.join(apache.base, 'bin') });
+      if (validation.code !== 0) throw new Error((validation.stderr || validation.stdout || 'httpd -t falló').trim());
+    }
+    if (wasUp) {
+      const stopped = await stopService('apache');
+      if (!stopped.ok) throw new Error(stopped.error || 'No se pudo detener Apache ordenadamente.');
+      const started = await startService('apache');
+      if (!started.ok) throw new Error(started.error || 'Apache no inició tras cambiar la extensión.');
+    }
+  } catch (error) {
+    atomicReplace(p.ini, oldIni);
+    if (wasUp && !(await portOpen(APACHE_PORT))) await startService('apache');
+    return { ok: false, error: `${error.message} Se restauró el php.ini anterior.` };
+  }
   return { ok: true, extensions: getExtensions() };
 }
 
-function nextPort() {
+async function nextPort() {
   const ports = readProjects().map(p => p.port).filter(n => Number.isFinite(n));
-  return Math.max(8058, ...ports) + 1;
+  let port = Math.max(8058, ...ports) + 1;
+  while (port <= 65535 && await portOpen(port, 200)) port++;
+  if (port > 65535) throw new Error('No quedan puertos disponibles para el sitio.');
+  return port;
+}
+
+function csvValue(value) {
+  return `"${String(value == null ? '' : value).replace(/"/g, '""')}"`;
+}
+
+function snapshotFiles(files) {
+  return new Map(files.map(file => [file, fs.existsSync(file) ? fs.readFileSync(file) : null]));
+}
+
+function restoreFiles(snapshot) {
+  for (const [file, contents] of snapshot) {
+    if (contents === null) {
+      try { fs.rmSync(file, { force: true }); } catch {}
+    } else {
+      atomicReplace(file, contents);
+    }
+  }
 }
 
 function addVhost(name, root, port) {
   const safe = name.replace(/[^A-Za-z0-9._-]/g, '_');
   const r = root.replace(/\\/g, '/');
   const block = `\nListen ${port}\n\n<VirtualHost *:${port}>\n    DocumentRoot "${r}"\n    ServerName 127.0.0.1\n    DirectoryIndex index.php index.html\n    <Directory "${r}">\n        Options Indexes FollowSymLinks\n        AllowOverride All\n        Require all granted\n    </Directory>\n    ErrorLog "logs/${safe}-error.log"\n    CustomLog "logs/${safe}-access.log" common\n</VirtualHost>\n`;
-  fs.appendFileSync(path.join(apache.base, 'conf', 'extra', 'httpd-vhosts.conf'), block, 'utf8');
+  const file = path.join(apache.base, 'conf', 'extra', 'httpd-vhosts.conf');
+  const current = fs.existsSync(file) ? fs.readFileSync(file) : Buffer.alloc(0);
+  atomicReplace(file, Buffer.concat([current, Buffer.from(block, 'utf8')]));
 }
 
 function htmlPage(name) {
@@ -553,9 +677,10 @@ function htmlPage(name) {
 function ensureProxyModules() {
   const conf = path.join(apache.base, 'conf', 'httpd.conf');
   let c = fs.readFileSync(conf, 'utf8');
+  const original = c;
   c = c.replace(/^#\s*LoadModule proxy_module .*$/m, 'LoadModule proxy_module modules/mod_proxy.so');
   c = c.replace(/^#\s*LoadModule proxy_http_module .*$/m, 'LoadModule proxy_http_module modules/mod_proxy_http.so');
-  fs.writeFileSync(conf, c, 'utf8');
+  if (c !== original) atomicReplace(conf, c);
 }
 
 function ensureSqliteDriver() {
@@ -582,16 +707,38 @@ function startNodeApp(root, port) {
   const logFile = path.join(logDir, `node-${safe}.log`);
   fs.appendFileSync(logFile, `[${new Date().toISOString()}] start ${safe} en 127.0.0.1:${port}\r\n`);
   const fd = fs.openSync(logFile, 'a');
-  const child = spawn(process.execPath, ['server.js'], {
-    cwd: root,
-    env: { ...process.env, PORT: String(port) },
-    detached: true,
-    stdio: ['ignore', fd, fd],
-    windowsHide: true,
+  const nodeEnv = { ...process.env, PORT: String(port) };
+  delete nodeEnv.PANEL_ACTIVE_MYSQL_VERSION;
+  delete nodeEnv.PANEL_ACTIVE_MYSQL_PORT;
+  delete nodeEnv.PANEL_ACTIVE_WWW_ROOT;
+  return new Promise(resolve => {
+    let child;
+    try {
+      child = spawn(process.execPath, [path.join(root, 'server.js')], {
+        cwd: root,
+        env: nodeEnv,
+        detached: true,
+        stdio: ['ignore', fd, fd],
+        windowsHide: true,
+      });
+    } catch (error) {
+      try { fs.closeSync(fd); } catch {}
+      return resolve({ ok: false, error: error.message });
+    }
+    child.once('spawn', () => {
+      try { fs.closeSync(fd); } catch {}
+      setNodePid(root, child.pid);
+      child.once('exit', () => {
+        if (Number(readNodePidMap()[nodePidKey(root)]) === child.pid) setNodePid(root, 0);
+      });
+      child.unref();
+      resolve({ ok: true, pid: child.pid });
+    });
+    child.once('error', error => {
+      try { fs.closeSync(fd); } catch {}
+      resolve({ ok: false, error: error.message });
+    });
   });
-  try { fs.closeSync(fd); } catch {}
-  child.unref();
-  return child.pid;
 }
 
 async function startNodeApps() {
@@ -601,7 +748,10 @@ async function startNodeApps() {
     if (!fs.existsSync(marker)) continue;
     const port = Number(fs.readFileSync(marker, 'utf8').trim());
     if (!port) continue;
-    if (!(await portOpen(port, 500))) startNodeApp(p.root, port);
+    if (!(await portOpen(port, 500))) {
+      const result = await startNodeApp(p.root, port);
+      if (!result.ok) throw new Error(`No se pudo iniciar ${p.name}: ${result.error}`);
+    }
   }
 }
 
@@ -623,11 +773,17 @@ async function nodeServices() {
   return out;
 }
 
-async function stopNodeByPort(port) {
-  const cmd = `$p=(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess); if($p){ Stop-Process -Id $p -Force }`;
-  await run('powershell.exe', ['-NoProfile', '-Command', cmd], { timeout: 15000 });
-  for (let i = 0; i < 20 && await portOpen(port, 300); i++) await new Promise(r => setTimeout(r, 300));
-  return !(await portOpen(port));
+async function stopNodeByPort(port, root) {
+  const pid = Number(readNodePidMap()[nodePidKey(root)]) || 0;
+  if (!pid) return { ok: false, error: 'No hay PID propio registrado; no se terminará un proceso que solo coincide por puerto.' };
+  const expectedRoot = path.resolve(root).replace(/'/g, "''");
+  const cmd = `$expected='${expectedRoot}'; $p=Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}'; if($p -and $p.Name -match '^node(\.exe)?$' -and $p.CommandLine -and $p.CommandLine.IndexOf($expected,[StringComparison]::OrdinalIgnoreCase) -ge 0){ Stop-Process -Id ${pid} -Force; exit 0 } else { exit 2 }`;
+  const result = await run('powershell.exe', ['-NoProfile', '-Command', cmd], { timeout: 15000 });
+  if (result.code !== 0) return { ok: false, error: 'El PID registrado no coincide con un proceso Node de este proyecto; no se tocó el proceso.' };
+  for (let i = 0; i < 40 && await portOpen(port, 300); i++) await sleep(300);
+  const stopped = !(await portOpen(port));
+  if (stopped) setNodePid(root, 0);
+  return stopped ? { ok: true } : { ok: false, error: 'El proceso terminó, pero el puerto sigue ocupado por otro proceso.' };
 }
 
 async function nodeAction(name, action) {
@@ -637,25 +793,33 @@ async function nodeAction(name, action) {
   if (!fs.existsSync(marker)) return { ok: false, error: 'Falta .panel-node-port' };
   const internal = Number(fs.readFileSync(marker, 'utf8').trim());
   if (!internal) return { ok: false, error: 'Puerto interno inválido' };
-  if (action === 'stop' || action === 'restart') await stopNodeByPort(internal);
+  if (action === 'stop' || action === 'restart') {
+    const stopped = await stopNodeByPort(internal, p.root);
+    if (!stopped.ok) return stopped;
+  }
   if (action === 'start' || action === 'restart') {
     if (!(await portOpen(internal, 300))) {
-      startNodeApp(p.root, internal);
+      const launched = await startNodeApp(p.root, internal);
+      if (!launched.ok) return { ok: false, error: launched.error };
       for (let i = 0; i < 30 && !(await portOpen(internal, 300)); i++) await new Promise(r => setTimeout(r, 300));
     }
   }
-  return { ok: true, running: await portOpen(internal, 300) };
+  const running = await portOpen(internal, 300);
+  return { ok: running, running, error: running ? null : 'La aplicación no abrió su puerto interno.' };
 }
 
 function addProxyVhost(name, port, internalPort) {
   const safe = name.replace(/[^A-Za-z0-9._-]/g, '_');
   const block = `\nListen ${port}\n\n<VirtualHost *:${port}>\n    ProxyPreserveHost On\n    ProxyPass "/" "http://127.0.0.1:${internalPort}/"\n    ProxyPassReverse "/" "http://127.0.0.1:${internalPort}/"\n    ServerName 127.0.0.1\n    ErrorLog "logs/${safe}-error.log"\n    CustomLog "logs/${safe}-access.log" common\n</VirtualHost>\n`;
-  fs.appendFileSync(path.join(apache.base, 'conf', 'extra', 'httpd-vhosts.conf'), block, 'utf8');
+  const file = path.join(apache.base, 'conf', 'extra', 'httpd-vhosts.conf');
+  const current = fs.existsSync(file) ? fs.readFileSync(file) : Buffer.alloc(0);
+  atomicReplace(file, Buffer.concat([current, Buffer.from(block, 'utf8')]));
 }
 
 async function createSite(body) {
   let name = String(body.name || '').trim();
   const type = body.type || 'php';
+  if (!['link', 'php', 'laravel', 'html', 'node'].includes(type)) return { ok: false, error: 'Tipo de sitio inválido' };
   const existing = String(body.path || '').trim();
   if (type === 'link') {
     if (!existing || !fs.existsSync(existing) || !fs.statSync(existing).isDirectory()) return { ok: false, error: 'Carpeta no válida' };
@@ -672,6 +836,7 @@ async function createSite(body) {
 
     if (type === 'laravel') {
       const p = activePhpObj();
+      if (!p) return { ok: false, error: 'No hay un PHP válido activo para crear Laravel.' };
       const r = await run(p.exe, [COMPOSER, 'create-project', 'laravel/laravel', root, '--prefer-dist', '--no-interaction'], { timeout: 600000, maxBuffer: 10 * 1024 * 1024 });
       if (r.code !== 0) return { ok: false, error: (r.stderr || r.stdout || 'Composer falló').slice(0, 2000) };
       ensureSqliteDriver();
@@ -693,8 +858,6 @@ http.createServer((req, res) => {
       fs.writeFileSync(path.join(root, 'server.js'), serverCode, 'utf8');
       nodeInternal = await findFreePort(3100);
       fs.writeFileSync(path.join(root, '.panel-node-port'), String(nodeInternal), 'utf8');
-      ensureProxyModules();
-      startNodeApp(root, nodeInternal);
     } else if (type === 'html') {
       fs.writeFileSync(path.join(root, 'index.html'), htmlPage(name), 'utf8');
     } else {
@@ -704,24 +867,49 @@ http.createServer((req, res) => {
 
   const docs = path.join(root, 'public');
   const docRoot = fs.existsSync(path.join(docs, 'index.php')) ? docs : root;
-  const port = nextPort();
+  const port = await nextPort();
 
   const linkedNode = type === 'link' && detectProjectType(root) === 'node' && fs.existsSync(path.join(root, '.panel-node-port'));
-  if (type === 'node' || linkedNode) {
-    if (!nodeInternal) nodeInternal = Number(fs.readFileSync(path.join(root, '.panel-node-port'), 'utf8').trim());
-    ensureProxyModules();
-    addProxyVhost(name, port, nodeInternal);
-  } else {
-    addVhost(name, docRoot, port);
+  const isNodeSite = type === 'node' || linkedNode;
+  if (isNodeSite && !nodeInternal) nodeInternal = Number(fs.readFileSync(path.join(root, '.panel-node-port'), 'utf8').trim());
+  if (isNodeSite && (!Number.isInteger(nodeInternal) || nodeInternal < 1 || nodeInternal > 65535)) return { ok: false, error: 'Puerto interno de Node inválido.' };
+
+  const vhostsFile = path.join(apache.base, 'conf', 'extra', 'httpd-vhosts.conf');
+  const apacheConf = path.join(apache.base, 'conf', 'httpd.conf');
+  const portsFile = path.join(LARAGON, 'puertos.csv');
+  const snapshots = snapshotFiles(isNodeSite ? [apacheConf, vhostsFile, portsFile] : [vhostsFile, portsFile]);
+  const apacheWasUp = await portOpen(APACHE_PORT);
+  try {
+    if (isNodeSite) ensureProxyModules();
+    if (isNodeSite) addProxyVhost(name, port, nodeInternal);
+    else addVhost(name, docRoot, port);
+
+    let csv = '';
+    if (fs.existsSync(portsFile)) csv = fs.readFileSync(portsFile, 'utf8');
+    if (!csv.trim()) csv = `${csvValue('Puerto')},${csvValue('Proyecto')},${csvValue('DocumentRoot')}\r\n`;
+    const row = [port, name, docRoot.replace(/\\/g, '/')].map(csvValue).join(',') + '\r\n';
+    atomicReplace(portsFile, `${csv.replace(/\s*$/, '')}\r\n${row}`);
+
+    const validation = await run(apache.exe, ['-t', '-d', apache.base], { cwd: path.join(apache.base, 'bin') });
+    if (validation.code !== 0) throw new Error(`Apache rechazó el nuevo sitio: ${(validation.stderr || validation.stdout || 'httpd -t falló').trim()}`);
+    if (apacheWasUp) {
+      const stopped = await stopService('apache');
+      if (!stopped.ok) throw new Error(stopped.error || 'No se pudo detener Apache ordenadamente.');
+      const started = await startService('apache');
+      if (!started.ok) throw new Error(`Apache no reinició: ${started.error || 'error desconocido'}`);
+    }
+  } catch (error) {
+    restoreFiles(snapshots);
+    if (apacheWasUp && !(await portOpen(APACHE_PORT))) await startService('apache');
+    return { ok: false, error: `${error.message} Se restauraron los vhosts y el mapeo de puertos; la carpeta del proyecto se conservó.` };
   }
 
-  fs.appendFileSync(path.join(LARAGON, 'puertos.csv'), `"${port}","${name}","${docRoot.replace(/\\/g, '/')}"\r\n`, 'utf8');
-  if (await portOpen(80)) {
-    await stopService('apache');
-    const r = await startService('apache');
-    if (!r.ok) return { ok: false, error: `Sitio creado, pero Apache no reinició: ${r.error || ''}` };
+  let nodeWarning = null;
+  if (type === 'node') {
+    const launched = await startNodeApp(root, nodeInternal);
+    if (!launched.ok) nodeWarning = `Sitio creado, pero Node no arrancó: ${launched.error}`;
   }
-  return { ok: true, project: { name, port, root: docRoot.replace(/\\/g, '/'), url: `http://127.0.0.1:${port}`, type: type === 'link' ? detectProjectType(docRoot) : type } };
+  return { ok: true, warning: nodeWarning, project: { name, port, root: docRoot.replace(/\\/g, '/'), url: `http://127.0.0.1:${port}`, type: type === 'link' ? detectProjectType(docRoot) : type } };
 }
 
 function listBackups() {
@@ -1105,15 +1293,18 @@ function openTool(target, tool) {
 }
 
 async function switchPhp(branch) {
+  if (selectionWarnings.some(warning => warning.startsWith('Laragon cambió Apache/puerto'))) {
+    return { ok: false, error: 'Laragon tiene otra versión de Apache seleccionada; detén el servicio y vuelve a intentar.' };
+  }
   const list = phpVersions();
-  // Preferir la version mas nueva de la rama que tenga php8apache2_4.dll (mod_php) y, entre iguales, la ZTS.
+  // mod_php necesita PHP Thread Safe (ZTS); un build NTS no se debe activar en Apache.
   const candidates = list
-    .filter(p => p.branch === branch && p.apache)
-    .sort((a, b) => (b.short.localeCompare(a.short, undefined, { numeric: true })) || (Number(b.ts) - Number(a.ts)));
-  const target = candidates[0] || list.find(p => p.branch === branch);
+    .filter(p => p.branch === branch && p.apache && p.ts && p.x64)
+    .sort((a, b) => laragonStack.compareVersions(b.full, a.full)
+      || laragonStack.compareVersionNames(b.folder, a.folder)
+      || (Number(b.ts) - Number(a.ts)));
+  const target = candidates[0];
   if (!target) return { ok: false, error: 'Versión no instalada' };
-  const dll = path.join(target.base, 'php8apache2_4.dll');
-  if (!fs.existsSync(dll)) return { ok: false, error: 'php8apache2_4.dll no encontrado' };
   const dir = target.base.replace(/\\/g, '/');
   let conf = `# PHP ${target.short} (panel)\n`;
   // Apache puede cargar su propia libssl; precargar las de PHP evita conflictos de version.
@@ -1121,11 +1312,45 @@ async function switchPhp(branch) {
     if (fs.existsSync(path.join(target.base, lib))) conf += `LoadFile "${dir}/${lib}"\n`;
   }
   conf += `LoadModule php_module "${dir}/php8apache2_4.dll"\nPHPIniDir "${dir}"\n<IfModule mime_module>\n    AddType application/x-httpd-php .php\n</IfModule>\n`;
-  fs.writeFileSync(path.join(LARAGON, 'etc', 'apache2', 'mod_php.conf'), conf, 'utf8');
-  try { setIniValue(path.join(LARAGON, 'usr', 'laragon.ini'), 'php', 'Version', target.folder); } catch {}
-  const wasUp = await portOpen(80);
-  if (wasUp) { await stopService('apache'); await startService('apache'); }
-  return { ok: true, active: target.short, folder: target.folder };
+  const modPhpFile = path.join(LARAGON, 'etc', 'apache2', 'mod_php.conf');
+  const laragonIni = path.join(LARAGON, 'usr', 'laragon.ini');
+  const apacheFolder = apache && apache.name;
+  if (!apacheFolder) return { ok: false, error: 'Apache no encontrado; no se cambió PHP.' };
+  const httpd = path.join(apache.base, 'bin', 'httpd.exe');
+  const wasUp = await portOpen(APACHE_PORT);
+  let oldModPhp;
+  let oldIni;
+  try {
+    oldModPhp = fs.existsSync(modPhpFile) ? fs.readFileSync(modPhpFile) : null;
+    oldIni = fs.readFileSync(laragonIni);
+    fs.mkdirSync(path.dirname(modPhpFile), { recursive: true });
+    atomicReplace(modPhpFile, conf);
+    setIniValue(laragonIni, 'php', 'Version', target.folder);
+
+    const validation = await run(httpd, ['-t', '-d', apache.base], { cwd: path.join(apache.base, 'bin') });
+    if (validation.code !== 0) throw new Error(`Apache rechazó PHP ${target.full}: ${(validation.stderr || validation.stdout || 'httpd -t falló').trim()}`);
+
+    if (wasUp) {
+      const stopped = await stopService('apache');
+      if (!stopped.ok) throw new Error(stopped.error || 'No se pudo detener Apache ordenadamente.');
+      const started = await startService('apache');
+      if (!started.ok) throw new Error(started.error || 'Apache no pudo iniciar con la versión PHP seleccionada.');
+    }
+    return { ok: true, active: target.full, folder: target.folder, restarted: wasUp };
+  } catch (error) {
+    try {
+      if (oldModPhp) atomicReplace(modPhpFile, oldModPhp);
+      else fs.rmSync(modPhpFile, { force: true });
+      if (oldIni) atomicReplace(laragonIni, oldIni);
+    } catch (restoreError) {
+      return { ok: false, error: `${error.message} Además, falló la restauración de la configuración: ${restoreError.message}` };
+    }
+    if (wasUp && !(await portOpen(APACHE_PORT))) {
+      const restored = await startService('apache');
+      if (!restored.ok) return { ok: false, error: `${error.message} La configuración previa fue restaurada, pero Apache no arrancó: ${restored.error}` };
+    }
+    return { ok: false, error: `${error.message} Se restauró la configuración anterior.` };
+  }
 }
 
 async function dumpDatabase(db) {
@@ -1362,6 +1587,7 @@ function readForm(req) {
 
 async function handle(req, res, isLan) {
   try {
+    await refreshLaragonSelections();
     const url = new URL(req.url, 'http://127.0.0.1');
 
     if (isLan) {
@@ -1485,9 +1711,17 @@ async function handle(req, res, isLan) {
     }
     if (url.pathname === '/api/overview') {
       const [services, dbs] = await Promise.all([serviceStatus(), listDatabases()]);
+      const stack = laragonStack.stackSnapshot(LARAGON, config.redisPath, {
+        apacheFolder: apache && apache.name,
+        mysqlFolder: mysql && mysql.name,
+        apachePort: APACHE_PORT,
+        mysqlPort: MYSQL_PORT,
+      });
+      stack.warnings.push(...selectionWarnings);
       return json(res, 200, {
         services,
-        php: { versions: phpVersions().map(p => ({ short: p.short, branch: p.branch, folder: p.folder, hasSqlsrv: fs.existsSync(path.join(p.base, 'ext', `php_sqlsrv_${p.branch.replace('.', '')}_ts_x64.dll`)) })), active: activePhp() },
+        php: { versions: phpVersions().map(p => ({ short: p.full, full: p.full, branch: p.branch, folder: p.folder, ts: p.ts, modPhp: p.apache, x64: p.x64, compiler: p.compiler, hasSqlsrv: fs.existsSync(path.join(p.base, 'ext', `php_sqlsrv_${p.branch.replace('.', '')}_ts_x64.dll`)) })), active: activePhp(), activeFolder: activePhpFolder() },
+        stack,
         projects: readProjects().length,
         databases: dbs.length,
         disk: diskInfo(),
@@ -1525,7 +1759,8 @@ async function handle(req, res, isLan) {
         if (action === 'restart') {
           const winSvc = await managedWinService(name);
           if (winSvc) return winservices.action(winSvc, 'restart');
-          await stopService(name);
+          const stopped = await stopService(name);
+          if (!stopped.ok) return stopped;
           await sleep(1500);
           return startService(name);
         }
@@ -1613,7 +1848,7 @@ async function handle(req, res, isLan) {
         'netsh advfirewall firewall delete rule name="Laragon Apache LAN" >nul 2>&1',
         `netsh advfirewall firewall add rule name="Laragon Panel LAN" dir=in action=allow protocol=TCP localport=${PANEL_LAN_PORT} profile=any`,
         'netsh advfirewall firewall add rule name="Laragon Projects LAN" dir=in action=allow protocol=TCP localport=8001-8100 profile=any',
-        'netsh advfirewall firewall add rule name="Laragon Apache LAN" dir=in action=allow protocol=TCP localport=80 profile=any',
+        `netsh advfirewall firewall add rule name="Laragon Apache LAN" dir=in action=allow protocol=TCP localport=${APACHE_PORT} profile=any`,
       ].join('\r\n');
       const ps1 = path.join(config.dataDir, 'firewall.ps1');
       fs.writeFileSync(ps1, script, 'utf8');
@@ -1746,9 +1981,16 @@ async function handle(req, res, isLan) {
 const localServer = http.createServer((req, res) => handle(req, res, false));
 const lanServer = http.createServer((req, res) => handle(req, res, true));
 
+localServer.on('error', e => {
+  console.error(`No se pudo abrir el panel local en 127.0.0.1:${PANEL_PORT}: ${e.message}`);
+  process.exitCode = 1;
+  process.exit(1);
+});
 localServer.listen(PANEL_PORT, '127.0.0.1', () => {
   try { fs.writeFileSync(PANEL_PID_FILE, String(process.pid), 'utf8'); } catch {}
   console.log(`Laragon Panel local en http://127.0.0.1:${PANEL_PORT}`);
+  ensureSqliteDriver();
+  setTimeout(() => { startNodeApps().catch(e => console.error(`[node] ${e.message}`)); }, 1500);
 });
 
 lanServer.on('error', e => console.error(`LAN listener: ${e.message}`));
@@ -1756,8 +1998,15 @@ lanServer.listen(PANEL_LAN_PORT, '0.0.0.0', () => {
   console.log(`Laragon Panel LAN en http://0.0.0.0:${PANEL_LAN_PORT} (clave ${LAN_KEY})`);
 });
 
-ensureSqliteDriver();
-setTimeout(() => { startNodeApps().catch(() => {}); }, 1500);
 backup.startScheduler(msg => console.log(`[respaldos] ${msg}`));
+
+function cleanupPid() {
+  try {
+    if (Number(fs.readFileSync(PANEL_PID_FILE, 'utf8')) === process.pid) fs.unlinkSync(PANEL_PID_FILE);
+  } catch {}
+}
+process.once('exit', cleanupPid);
+process.once('SIGINT', () => { cleanupPid(); process.exit(0); });
+process.once('SIGTERM', () => { cleanupPid(); process.exit(0); });
 
 

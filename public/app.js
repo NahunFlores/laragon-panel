@@ -138,7 +138,30 @@ function renderOverview(o) {
   $('#settingsPanel').textContent = `127.0.0.1:${location.port || '9090'}`;
 
   renderPhp(o);
+  renderStack(o.stack);
   if (lastSystem) renderResources(lastSystem);
+}
+
+function renderStack(stack) {
+  const list = $('#stackVersions');
+  const warningBox = $('#stackWarnings');
+  if (!list || !stack) return;
+  const php = stack.php || {};
+  const apache = stack.apache || {};
+  const mysql = stack.mysql || {};
+  const redis = stack.redis || {};
+  const versions = [
+    ['Apache', apache.runtime && apache.selected && apache.runtime !== apache.selected ? `${apache.runtime} (Laragon: ${apache.selected})` : apache.selected || 'No detectado'],
+    ['PHP en Laragon', php.laragonIni || 'No seleccionado'],
+    ['PHP en Apache', php.apacheConfig || 'No configurado'],
+    ['Último PHP cargado', php.lastLoaded || 'Sin dato de log'],
+    ['MySQL', mysql.runtime && mysql.selected && mysql.runtime !== mysql.selected ? `${mysql.runtime} (Laragon: ${mysql.selected})` : mysql.selected || 'No detectado'],
+    ['Redis', redis.selected ? `${redis.selected} · puerto ${redis.port}` : 'No detectado'],
+  ];
+  list.innerHTML = versions.map(([name, value]) => `<div><span>${esc(name)}</span><strong>${esc(value)}</strong></div>`).join('');
+  const warnings = Array.isArray(stack.warnings) ? stack.warnings : [];
+  warningBox.hidden = warnings.length === 0;
+  warningBox.innerHTML = warnings.map(text => `<div>${esc(text)}</div>`).join('');
 }
 
 function fmtUptime(sec) {
@@ -553,6 +576,7 @@ function renderWindows() {
         </div>
         ${winStateBadge(c.status)}
       </div>
+      ${c.versionDrift ? `<div class="note err" style="margin:8px 0"><strong>Versión heredada distinta.</strong><br>Servicio: ${esc(c.actualExe)}<br>Laragon selecciona: ${esc(c.exe)}<br><button class="btn ghost" style="margin-top:8px" data-win-reconfigure="core:${esc(c.key)}">Reconfigurar servicio</button></div>` : ''}
       <div class="backup-dest">${esc(c.exe || 'Ejecutable no encontrado')}</div>
       <div class="service-actions">${winButtons(c.name, c.status, { install: `core:${c.key}`, remove: true, startMode: c.startMode })}</div>
     </article>`;
@@ -693,7 +717,7 @@ function winInstallModal(preset = null) {
       <div class="field"><label>Carpeta de logs</label><input id="winLogDir" placeholder="C:\\laragon\\tmp\\logs"></div>
     </div>
     <label class="check-label" style="margin-top:6px"><input type="checkbox" id="winAuto" checked> Iniciar automáticamente con Windows</label>
-    <label class="check-label"><input type="checkbox" id="winOverwrite"> Reemplazar si ya existe</label>
+    <label class="check-label"><input type="checkbox" id="winOverwrite" ${preset && preset.overwrite ? 'checked' : ''}> Reemplazar si ya existe</label>
     <p class="muted small" style="margin:4px 0 0;line-height:1.5">Instalar y controlar servicios requiere que el panel se ejecute como administrador.</p>
   `, [
     { label: 'Cancelar', onClick: closeModal },
@@ -760,6 +784,12 @@ function bindWindows() {
   $('#winQueueSearch').addEventListener('input', e => { winQueueFilter = e.target.value; renderWindows(); });
   $('#winQueueOnly').addEventListener('change', renderWindows);
   const click = e => {
+    const reconfigure = e.target.closest('[data-win-reconfigure]');
+    if (reconfigure) {
+      const value = reconfigure.dataset.winReconfigure;
+      winInstallModal({ kind: 'core', key: value.slice(5), overwrite: true });
+      return;
+    }
     const install = e.target.closest('[data-win-install]');
     if (install) { winInstallFrom(install.dataset.winInstall); return; }
     const act = e.target.closest('[data-win-act]');
@@ -803,27 +833,26 @@ function renderDatabases() {
 
 function renderPhp(o) {
   if (!o || !o.php) return;
-  const active = o.php.active;
+  const activeFolder = o.php.activeFolder;
   const grid = $('#phpGrid');
   grid.innerHTML = o.php.versions.map(p => {
-    const isActive = p.short === active;
+    const isActive = p.folder === activeFolder;
+    const usable = p.ts && p.modPhp && p.x64;
     return `<article class="php-card ${isActive ? 'active' : ''}">
       <div class="php-head">
         <div>
-          <div class="php-version">${esc(p.short)}</div>
-          <div class="php-branch">PHP ${esc(p.branch)} · ZTS x64</div>
+          <div class="php-version">${esc(p.full || p.short)}</div>
+          <div class="php-branch">PHP ${esc(p.branch)} · ${p.ts ? 'TS' : 'NTS'} · ${p.x64 ? 'x64' : 'arquitectura no detectada'}${p.compiler ? ` · VS${esc(p.compiler)}` : ''}</div>
         </div>
         <span class="badge ${isActive ? '' : 'gray'}">${isActive ? 'Activo' : 'Disponible'}</span>
       </div>
       <div class="php-ext">
-        <span class="chip">sqlsrv</span>
-        <span class="chip">pdo_sqlsrv</span>
-        <span class="chip">OPcache</span>
-        ${p.branch === '8.2' ? '<span class="chip">driver 5.12.0</span>' : '<span class="chip">driver 5.13.3</span>'}
+        <span class="chip">${p.hasSqlsrv ? 'sqlsrv disponible' : 'sqlsrv no detectado'}</span>
+        <span class="chip">${usable ? 'mod_php compatible' : 'no compatible con mod_php'}</span>
       </div>
       ${isActive
         ? '<button class="btn ghost" disabled>En uso</button>'
-        : `<button class="btn primary" data-php="${esc(p.branch)}">Activar</button>`}
+        : usable ? `<button class="btn primary" data-php="${esc(p.branch)}">Activar PHP ${esc(p.full || p.short)}</button>` : '<button class="btn ghost" disabled>Solo CLI/FastCGI</button>'}
     </article>`;
   }).join('');
 }
@@ -1120,7 +1149,7 @@ function newSiteModal() {
       try {
         const r = await api('/api/site', { method: 'POST', body: JSON.stringify({ name, type, path }) });
         closeModal();
-        toast('Sitio creado', `${r.project.name} → ${r.project.url}`, 'ok');
+        toast(r.warning ? 'Sitio creado con aviso' : 'Sitio creado', r.warning || `${r.project.name} → ${r.project.url}`, r.warning ? 'err' : 'ok');
         await loadProjects();
         await refreshOverview(true);
       } catch (e) {

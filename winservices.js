@@ -19,6 +19,7 @@ const net = require('net');
 const { spawn } = require('child_process');
 const config = require('./config');
 const backup = require('./backup');
+const laragonStack = require('./laragon-stack');
 
 const LARAGON = config.laragonRoot;
 const NSSM = config.nssmPath || 'C:/laragon/nssm-2.24/win64/nssm.exe';
@@ -54,6 +55,12 @@ function run(exe, args, opts = {}) {
 
 function win(p) {
   return String(p || '').replace(/\//g, '\\');
+}
+
+function quoteWindowsArg(value) {
+  const text = String(value);
+  if (!/[\s"]/.test(text)) return text;
+  return `"${text.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
 }
 
 function hasNssm() {
@@ -117,47 +124,22 @@ function removeManaged(name) {
 }
 
 function latestDir(base, prefix) {
-  try {
-    return fs.readdirSync(base, { withFileTypes: true })
-      .filter(e => e.isDirectory() && e.name.startsWith(prefix))
-      .map(e => path.join(base, e.name))
-      .sort()
-      .pop() || null;
-  } catch { return null; }
+  const name = prefix === 'httpd-'
+    ? laragonStack.apacheFolder(LARAGON)
+    : prefix === 'mysql-'
+      ? laragonStack.mysqlFolder(LARAGON)
+      : laragonStack.versionDirs(base, prefix).at(-1);
+  return name ? path.join(base, name) : null;
 }
 
 function findRedis() {
-  if (config.redisPath && fs.existsSync(config.redisPath)) return config.redisPath;
-  const base = path.join(LARAGON, 'bin', 'redis');
-  const direct = path.join(base, 'redis-server.exe');
-  if (fs.existsSync(direct)) return direct;
-  try {
-    for (const e of fs.readdirSync(base, { withFileTypes: true })) {
-      if (!e.isDirectory()) continue;
-      const exe = path.join(base, e.name, 'redis-server.exe');
-      if (fs.existsSync(exe)) return exe;
-    }
-  } catch {}
-  return '';
+  return laragonStack.findRedis(LARAGON, config.redisPath);
 }
 
 function findPhp() {
   if (config.phpPath && fs.existsSync(config.phpPath)) return config.phpPath;
-  const base = path.join(LARAGON, 'bin', 'php');
-  try {
-    const ini = fs.readFileSync(path.join(LARAGON, 'usr', 'laragon.ini'), 'utf8');
-    const m = ini.match(/^\s*\[php\][\s\S]*?^\s*Version\s*=\s*(.+)$/im);
-    if (m) {
-      const exe = path.join(base, m[1].trim(), 'php.exe');
-      if (fs.existsSync(exe)) return exe;
-    }
-  } catch {}
-  const dir = latestDir(base, 'php-');
-  if (dir) {
-    const exe = path.join(dir, 'php.exe');
-    if (fs.existsSync(exe)) return exe;
-  }
-  return '';
+  const folder = laragonStack.phpFolder(LARAGON);
+  return folder ? path.join(LARAGON, 'bin', 'php', folder, 'php.exe') : '';
 }
 
 function coreCatalog() {
@@ -337,11 +319,29 @@ exit $fail
 
 async function overview() {
   const list = await listWindowsServices();
-  const core = coreCatalog().map(c => ({
-    ...c,
-    status: statusFor(list, c.name),
-    installed: !!findService(list, c.name),
-    startMode: (findService(list, c.name) || {}).StartMode || '',
+  const savedManaged = readState().managed;
+  const core = await Promise.all(coreCatalog().map(async c => {
+    const service = findService(list, c.name);
+    const saved = savedManaged.find(item => item.name.toLowerCase() === c.name.toLowerCase());
+    let actualExe = saved && saved.exe || '';
+    if (!actualExe && service && fs.existsSync(NSSM)) {
+      const result = await run(NSSM, ['get', c.name, 'Application'], { timeout: 5000 });
+      if (result.code === 0) actualExe = result.stdout.trim().replace(/^"|"$/g, '');
+    }
+    if (!actualExe && service && service.PathName) {
+      const match = String(service.PathName).match(/^\s*"([^"]+\.exe)"|^\s*(\S+\.exe)/i);
+      actualExe = match ? (match[1] || match[2]) : '';
+    }
+    const configured = c.exe ? path.resolve(c.exe).toLowerCase() : '';
+    const actual = actualExe ? path.resolve(actualExe).toLowerCase() : '';
+    return {
+      ...c,
+      status: statusFor(list, c.name),
+      installed: !!service,
+      startMode: (service || {}).StartMode || '',
+      actualExe,
+      versionDrift: !!(service && configured && actual && configured !== actual),
+    };
   }));
   const queues = queueCandidates().map(q => ({
     ...q,
@@ -424,7 +424,7 @@ function nssmCommands(spec, installed = false) {
   const cmds = [];
   if (!installed) cmds.push([NSSM, 'install', spec.name, spec.exe]);
   cmds.push([NSSM, 'set', spec.name, 'Application', spec.exe]);
-  cmds.push([NSSM, 'set', spec.name, 'AppParameters', spec.args.join(' ')]);
+  cmds.push([NSSM, 'set', spec.name, 'AppParameters', spec.args.map(quoteWindowsArg).join(' ')]);
   cmds.push([NSSM, 'set', spec.name, 'AppDirectory', spec.cwd]);
   cmds.push([NSSM, 'set', spec.name, 'DisplayName', spec.label]);
   cmds.push([NSSM, 'set', spec.name, 'Description', `Laragon Panel: ${spec.label}`]);
@@ -447,17 +447,17 @@ async function install(specInput) {
   fs.mkdirSync(LOG_DIR, { recursive: true });
   const spec = buildSpec(specInput);
   const list = await listWindowsServices(true);
-  const exists = !!findService(list, spec.name);
+  const existingService = findService(list, spec.name);
+  const exists = !!existingService;
   if (exists && !specInput.overwrite) {
     throw new Error(`El servicio ${spec.name} ya existe. Marca "reemplazar" para reinstalarlo.`);
   }
 
   const cmds = [];
-  if (exists) {
-    const comspec = process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe';
-    cmds.push([comspec, '/c', actionWrapper(spec.name, 'remove')]);
-  }
-  cmds.push(...nssmCommands(spec, false));
+  if (exists && /running/i.test(String(existingService.State || ''))) cmds.push([NSSM, 'stop', spec.name, 'confirm']);
+  // Reconfigure an existing service in place. Never remove it first: a later NSSM error
+  // must not leave the machine without the service registration.
+  cmds.push(...nssmCommands(spec, exists));
 
   const steps = [];
   const admin = await isAdmin();
@@ -484,7 +484,7 @@ async function install(specInput) {
   if (!ok) {
     return { ok: false, error: error || 'No se pudo instalar el servicio', steps, elevated: !admin };
   }
-  addManaged({ name: spec.name, kind: spec.kind, label: spec.label, addedAt: new Date().toISOString() });
+  addManaged({ name: spec.name, kind: spec.kind, label: spec.label, exe: spec.exe, args: spec.args, cwd: spec.cwd, logOut: spec.logOut, logErr: spec.logErr, autoStart: spec.autoStart, addedAt: new Date().toISOString() });
   servicesCache = { at: 0, data: null };
   return { ok: true, service: spec.name, steps, elevated: !admin };
 }

@@ -15,11 +15,12 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 
-const { laragonRoot, mysqlPort, wwwRoot, dataDir } = require('./config');
+const { laragonRoot, dataDir, getMysqlPort, getWwwRoot } = require('./config');
+const laragonStack = require('./laragon-stack');
 
 const LARAGON = laragonRoot;
-const MYSQL_PORT = mysqlPort;
-const WWW = wwwRoot;
+const mysqlPortNow = () => Number(process.env.PANEL_ACTIVE_MYSQL_PORT) || getMysqlPort();
+const wwwRootNow = () => process.env.PANEL_ACTIVE_WWW_ROOT || getWwwRoot();
 const PANEL_DIR = __dirname;
 const DATA_DIR = dataDir;
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
@@ -33,6 +34,7 @@ const HISTORY_LIMIT = 100;
 const SNAPSHOT_RE = /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(-\d+)?$/;
 const SYSTEM_DBS = new Set(['information_schema', 'performance_schema', 'mysql', 'sys']);
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+let activeLockToken = '';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -78,6 +80,12 @@ function readState() {
 
 function writeState(state) {
   try { atomicJson(STATE_FILE, { ...state, updatedAt: new Date().toISOString() }); } catch {}
+  if (activeLockToken) {
+    const lock = readLock();
+    if (lock && lock.token === activeLockToken && lock.pid === process.pid) {
+      try { atomicJson(LOCK_FILE, { ...lock, at: Date.now() }); } catch {}
+    }
+  }
 }
 
 function readLock() {
@@ -91,14 +99,40 @@ function pidAlive(pid) {
 
 function acquireLock(jobId) {
   ensureDirs();
-  const cur = readLock();
-  if (cur && pidAlive(cur.pid) && Date.now() - (cur.at || 0) < 12 * 3600 * 1000) return false;
-  try { fs.writeFileSync(LOCK_FILE, JSON.stringify({ pid: process.pid, jobId, at: Date.now() }), 'utf8'); } catch {}
-  return true;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const token = crypto.randomBytes(16).toString('hex');
+    let fd;
+    try {
+      fd = fs.openSync(LOCK_FILE, 'wx');
+      fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, jobId, at: Date.now(), token }), 'utf8');
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      activeLockToken = token;
+      return true;
+    } catch (error) {
+      if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+      if (error.code !== 'EEXIST') {
+        if (fd !== undefined) try { fs.unlinkSync(LOCK_FILE); } catch {}
+        return false;
+      }
+      const current = readLock();
+      if (current && pidAlive(current.pid) && Date.now() - (current.at || 0) < 12 * 3600 * 1000) return false;
+      // An empty lock may be in the tiny window between exclusive creation and its write.
+      if (!current) {
+        try { if (Date.now() - fs.statSync(LOCK_FILE).mtimeMs < 30000) return false; } catch { return false; }
+      }
+      try { fs.unlinkSync(LOCK_FILE); } catch { return false; }
+    }
+  }
+  return false;
 }
 
 function releaseLock() {
-  try { fs.unlinkSync(LOCK_FILE); } catch {}
+  const current = readLock();
+  if (current && current.pid === process.pid && current.token === activeLockToken) {
+    try { fs.unlinkSync(LOCK_FILE); } catch {}
+  }
+  activeLockToken = '';
 }
 
 function isRunning() {
@@ -189,14 +223,7 @@ function uniqueSnapshotDir(root) {
 
 function mysqlInfo() {
   const baseDir = path.join(LARAGON, 'bin', 'mysql');
-  let names = [];
-  try {
-    names = fs.readdirSync(baseDir, { withFileTypes: true })
-      .filter(e => e.isDirectory() && e.name.startsWith('mysql-'))
-      .map(e => e.name)
-      .sort();
-  } catch {}
-  const name = names[names.length - 1];
+  const name = laragonStack.mysqlFolder(LARAGON, process.env.PANEL_ACTIVE_MYSQL_VERSION || '');
   if (!name) return null;
   const base = path.join(baseDir, name);
   return {
@@ -212,7 +239,7 @@ function mysqlInfo() {
 async function listDatabaseNames() {
   const mysql = mysqlInfo();
   if (!mysql) return [];
-  const r = await run(mysql.client, ['-u', 'root', `--port=${MYSQL_PORT}`, '--protocol=TCP', '-N', '-B', '-e', 'SHOW DATABASES;']);
+  const r = await run(mysql.client, ['-u', 'root', `--port=${mysqlPortNow()}`, '--protocol=TCP', '-N', '-B', '-e', 'SHOW DATABASES;']);
   if (r.code !== 0) throw new Error((r.stderr || 'No se pudo consultar MySQL').trim().slice(0, 500));
   return r.stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean).filter(d => !SYSTEM_DBS.has(d));
 }
@@ -362,10 +389,10 @@ function listProjects(knownDbs = null) {
   if (!out.length) {
     let port = 8001;
     try {
-      for (const e of fs.readdirSync(WWW, { withFileTypes: true })) {
+      for (const e of fs.readdirSync(wwwRootNow(), { withFileTypes: true })) {
         if (!e.isDirectory()) continue;
         if (['Respaldos', 'moodledata', 'node_modules'].includes(e.name)) continue;
-        add(e.name, port++, path.join(WWW, e.name));
+        add(e.name, port++, path.join(wwwRootNow(), e.name));
       }
     } catch {}
   }
@@ -530,7 +557,7 @@ function snapshotForOpen(id, wantLatest = true) {
 }
 
 async function ensureMysql(log) {
-  if (await portOpen(MYSQL_PORT, 400)) return;
+  if (await portOpen(mysqlPortNow(), 400)) return;
   const mysql = mysqlInfo();
   if (!mysql || !fs.existsSync(mysql.exe)) throw new Error('MySQL no está instalado');
 
@@ -540,7 +567,7 @@ async function ensureMysql(log) {
     log('MySQL está arrancando; esperando…');
     for (let i = 0; i < 60; i++) {
       await sleep(500);
-      if (await portOpen(MYSQL_PORT, 300)) return;
+      if (await portOpen(mysqlPortNow(), 300)) return;
     }
     throw new Error('MySQL no terminó de arrancar');
   }
@@ -554,7 +581,7 @@ async function ensureMysql(log) {
   }).unref();
   for (let i = 0; i < 60; i++) {
     await sleep(500);
-    if (await portOpen(MYSQL_PORT, 300)) {
+    if (await portOpen(mysqlPortNow(), 300)) {
       log('MySQL listo.');
       return;
     }
@@ -565,7 +592,7 @@ async function ensureMysql(log) {
 function dumpDatabase(mysql, db, file, log) {
   return new Promise((resolve, reject) => {
     const args = [
-      '-u', 'root', `--port=${MYSQL_PORT}`, '--protocol=TCP',
+      '-u', 'root', `--port=${mysqlPortNow()}`, '--protocol=TCP',
       '--single-transaction', '--quick', '--routines', '--triggers',
       '--events', '--hex-blob', '--default-character-set=utf8mb4',
       '--set-gtid-purged=OFF', '--no-tablespaces',
